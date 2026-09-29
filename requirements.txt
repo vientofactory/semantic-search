@@ -1,0 +1,11 @@
+# LawCast semantic-search side project dependencies (Python 3.13, macOS arm64 tested).
+#
+# Korean embedding model (jhgan/ko-sbert-sts) is downloaded on first use
+# from HuggingFace; no extra install needed.
+torch>=2.6
+sentence-transformers>=6.1
+faiss-cpu>=1.11
+numpy>=2.0
+
+# dev / test
+pytest>=8.0
