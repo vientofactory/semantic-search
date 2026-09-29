@@ -12,13 +12,14 @@ via `--db ../../lawcast_prod.db`.
 Usage:
     python scripts/extract_sample_data.py
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -85,7 +86,7 @@ def main() -> None:
         count = sum(1 for record in records if record['length_bucket'] == bucket)
         print(f'  {bucket:<6} : {count}')
     print(f'written to     : {args.out}')
-    print(f'extracted_at   : {datetime.now(timezone.utc).isoformat()}')
+    print(f'extracted_at   : {datetime.now(UTC).isoformat()}')
 
 
 if __name__ == '__main__':

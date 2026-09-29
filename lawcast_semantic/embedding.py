@@ -6,9 +6,10 @@ both the tokenizer step (token counts / truncation against the model's
 max sequence length) and the embedding step (768-dim pooled vectors,
 L2-normalized for cosine similarity).
 """
+
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -34,9 +35,9 @@ class KoreanEmbedder:
         """Tokenize one text without truncation and report model-fit info."""
         # truncation=False so we can measure true length; verbose=False keeps
         # transformers from warning about long sequences (reported by us).
-        input_ids = self.tokenizer(
-            text, add_special_tokens=True, truncation=False, verbose=False
-        )['input_ids']
+        input_ids = self.tokenizer(text, add_special_tokens=True, truncation=False, verbose=False)[
+            'input_ids'
+        ]
         return {
             'token_count': len(input_ids),
             'truncated': len(input_ids) > self.max_seq_length,

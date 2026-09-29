@@ -3,6 +3,7 @@
 Loads the persisted chunks + FAISS index, embeds the query with the same
 Korean model used at index time, and ranks chunks by cosine similarity.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
+
 from .chunking import compute_chunks_fingerprint
 from .indexing import VectorIndex
 from .preprocess import normalize_text
@@ -44,7 +46,7 @@ class SemanticSearcher:
         chunks_path: Path = config.CHUNKS_PATH,
         index_path: Path = config.FAISS_INDEX_PATH,
         id_map_path: Path = config.ID_MAP_PATH,
-    ) -> 'SemanticSearcher':
+    ) -> SemanticSearcher:
         """Load stage 1/3 artifacts and build a ready-to-query searcher.
 
         Validates that the artifacts belong together (chunk fingerprint and
@@ -63,8 +65,8 @@ class SemanticSearcher:
         if meta.get('chunks_fingerprint') != expected_fingerprint:
             raise ValueError(
                 'chunks.jsonl is out of sync with the FAISS index '
-                f"(fingerprint {expected_fingerprint[:12]} != "
-                f"{str(meta.get('chunks_fingerprint'))[:12]}); "
+                f'(fingerprint {expected_fingerprint[:12]} != '
+                f'{str(meta.get("chunks_fingerprint"))[:12]}); '
                 're-run scripts/02_extract_embeddings.py and scripts/03_build_index.py'
             )
         if meta.get('model_name') != embedder.model_name:

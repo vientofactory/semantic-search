@@ -4,6 +4,7 @@ Input is the `proposalReason` field of LawCast `notice_archives` rows: Korean
 proposal texts with standalone section headers ("제안이유", "주요내용", ...) and
 enumerated items ("가.", "나.", "1)", ...) separated by newlines.
 """
+
 from __future__ import annotations
 
 import re

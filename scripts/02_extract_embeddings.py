@@ -5,8 +5,10 @@ model's max sequence length), embeds every chunk with the Korean
 sentence-transformers model, and saves the embedding matrix.
 
 Usage:
-    python scripts/02_extract_embeddings.py [--chunks artifacts/chunks.jsonl] [--out artifacts/embeddings.npz]
+    python scripts/02_extract_embeddings.py
+        [--chunks artifacts/chunks.jsonl] [--out artifacts/embeddings.npz]
 """
+
 from __future__ import annotations
 
 import argparse

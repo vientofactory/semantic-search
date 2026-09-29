@@ -11,12 +11,13 @@ Chunking strategy:
 Chunk text keeps newline-separated paragraphs intact (the same line-break
 structure LawCast preserves in `proposalReason`).
 """
+
 from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from typing import Iterable
 
 import config
 
@@ -61,9 +62,7 @@ def _paragraph_units(paragraph: str, max_chars: int) -> list[str]:
             if buffer:
                 units.append(buffer)
                 buffer = ''
-            units.extend(
-                sentence[i : i + max_chars] for i in range(0, len(sentence), max_chars)
-            )
+            units.extend(sentence[i : i + max_chars] for i in range(0, len(sentence), max_chars))
             continue
         candidate = f'{buffer} {sentence}'.strip()
         if len(candidate) > max_chars:

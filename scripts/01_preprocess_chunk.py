@@ -4,8 +4,10 @@ Reads sample notices JSONL, cleans each `proposal_reason`, splits into
 section-aware chunks, and writes chunks JSONL for stage 2.
 
 Usage:
-    python scripts/01_preprocess_chunk.py [--input data/sample_notices.jsonl] [--out artifacts/chunks.jsonl]
+    python scripts/01_preprocess_chunk.py
+        [--input data/sample_notices.jsonl] [--out artifacts/chunks.jsonl]
 """
+
 from __future__ import annotations
 
 import argparse

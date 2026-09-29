@@ -53,7 +53,10 @@ def test_overlap_repeats_trailing_context():
 
 
 def test_section_names_propagate_to_chunks():
-    notice = make_notice('제안이유\n이유 내용이 충분히 길어서 하나의 청크를 이룸.\n주요내용\n가. 주요 내용 첫 번째 항목임.')
+    notice = make_notice(
+        '제안이유\n이유 내용이 충분히 길어서 하나의 청크를 이룸.\n'
+        '주요내용\n가. 주요 내용 첫 번째 항목임.'
+    )
     chunks = chunk_notice(notice, max_chars=200, overlap_chars=20, min_chars=5)
     assert {chunk.section for chunk in chunks} == {'제안이유', '주요내용'}
 

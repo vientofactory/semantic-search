@@ -3,6 +3,7 @@
 All paths are resolved relative to this file so every script can be run
 from any working directory.
 """
+
 from __future__ import annotations
 
 import os

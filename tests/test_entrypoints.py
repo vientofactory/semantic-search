@@ -25,9 +25,7 @@ def test_stage1_handles_empty_input(tmp_path: Path):
     empty_input = tmp_path / 'empty_notices.jsonl'
     empty_input.write_text('', encoding='utf-8')
     out = tmp_path / 'chunks.jsonl'
-    result = run_script(
-        '01_preprocess_chunk.py', '--input', str(empty_input), '--out', str(out)
-    )
+    result = run_script('01_preprocess_chunk.py', '--input', str(empty_input), '--out', str(out))
     assert result.returncode == 0, result.stderr
     assert 'Traceback' not in result.stderr
     assert 'chunks created      : 0' in result.stdout

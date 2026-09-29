@@ -7,10 +7,10 @@ LawCast의 법률안(입법예고) 데이터를 대상으로 **의미(시맨틱)
 
 ```
 (0) 샘플 추출            (1) 전처리 + 청킹       (2) 토크나이징 + 임베딩
-lawcast_prod.db ──────► sample_notices.jsonl ──► chunks.jsonl ──► embeddings.npz
+backend/lawcast.db ───► sample_notices.jsonl ──► chunks.jsonl ──► embeddings.npz
                                                                         │
                      (4) 질의 처리 + 유사도        (3) FAISS 인덱싱        ▼
-                     query ────────────────────► faiss.index ◄──── 68 x 768 벡터
+                     query ────────────────────► faiss.index ◄──── 73 x 768 벡터
                                                 id_map.json
 ```
 
@@ -47,7 +47,7 @@ lawcast_prod.db ──────► sample_notices.jsonl ──► chunks.json
    "질의-문서 유사도 계산"과 목적이 정확히 일치합니다.
 2. **실제 다운로드·사용 검증**: HuggingFace에서 정상 다운로드되어 모든 단계에서 실제로 사용했습니다
    (`sentence-transformers 6.x` 네이티브 포맷, 커스텀 코드 없음).
-3. **적당한 크기**: BERT 계열(klue/bert-base) 768-dim, ~420MB — CPU(macOS arm64)에서 68개 청크 임베딩이 수 초 내 완료.
+3. **적당한 크기**: BERT 계열(klue/bert-base) 768-dim, ~420MB — CPU(macOS arm64)에서 수십 개 청크 임베딩이 수 초 내 완료.
 4. **한계 명시**: `max_seq_length=128` 토큰이라 긴 문서에는 부적합 — 그래서 청크 크기를 200자로
    캘리브레이션해 모든 청크가 모델 윈도우에 들어가게 했습니다(아래 참조).
 
@@ -71,13 +71,13 @@ semantic-search/
 │   ├── 03_build_index.py         # 3.  FAISS 인덱싱 + 저장
 │   └── 04_search.py              # 4.  질의 + 유사도 검색
 ├── data/
-│   └── sample_notices.jsonl      # 샘플 데이터 (lawcast_prod.db에서 추출, 12건)
+│   └── sample_notices.jsonl      # 샘플 데이터 (backend/lawcast.db에서 추출, 12건)
 ├── artifacts/                    # 단계별 산출물 (gitignore 대상)
-│   ├── chunks.jsonl              #   68 청크 (stage 1 출력)
-│   ├── embeddings.npz            #   68 x 768 float32 (stage 2 출력)
+│   ├── chunks.jsonl              #   73 청크 (stage 1 출력)
+│   ├── embeddings.npz            #   73 x 768 float32 (stage 2 출력)
 │   ├── faiss.index               #   IndexFlatIP (stage 3 출력)
 │   └── id_map.json               #   행 -> chunk_id 매핑 (stage 3 출력)
-├── tests/                        # pytest 19종 (모델 다운로드 없이 동작)
+├── tests/                        # pytest 29종 (모델 다운로드 없이 동작)
 ├── requirements.txt
 └── .venv/                        # 로컬 가상환경 (직접 생성)
 ```
@@ -98,8 +98,8 @@ python -m venv .venv          # Python 3.13 (macOS arm64) 기준
 이전 단계의 artifact를 기본 입력으로 읽습니다.
 
 ```bash
-# 0. LawCast SQLite DB에서 샘플 법률안 추출 (읽기 전용)
-.venv/bin/python scripts/extract_sample_data.py --db ../lawcast_prod.db
+# 0. LawCast SQLite DB에서 샘플 법률안 추출 (읽기 전용, 기본 소스: ../backend/lawcast.db)
+.venv/bin/python scripts/extract_sample_data.py
 
 # 1. 전처리 + 청킹  -> artifacts/chunks.jsonl
 .venv/bin/python scripts/01_preprocess_chunk.py
@@ -111,7 +111,7 @@ python -m venv .venv          # Python 3.13 (macOS arm64) 기준
 .venv/bin/python scripts/03_build_index.py
 
 # 4. 질의 처리 + 유사도 계산
-.venv/bin/python scripts/04_search.py --query "임대차 계약에서 세입자 보호" --k 3
+.venv/bin/python scripts/04_search.py --query "국가 연구시설과 장비의 공동 활용" --k 3
 .venv/bin/python scripts/04_search.py --query "..." --query "..." --json  # 다중 질의/JSON 출력
 ```
 
@@ -135,7 +135,7 @@ python -m venv .venv          # Python 3.13 (macOS arm64) 기준
 - `KoreanEmbedder`가 `jhgan/ko-sbert-sts` 로드 (sentence-transformers).
 - **토크나이징 단계**: 각 청크를 모델 토크나이저로 변환해 토큰 수/절단 여부를 리포트.
   최대 시퀀스 길이(128 토큰)를 초과해 잘리는 청크가 **0개**임을 출력으로 검증합니다
-  (`truncated_count: 0`, 최대 114 토큰).
+  (`truncated_count: 0`, 최대 113 토큰).
 - **임베딩 추출**: 768-dim float32, L2 정규화(코사인 유사도용).
   청킹 파라미터(200자)는 한국어 법률 텍스트의 토크나이즈 비율(~1.9자/토큰)과
   128 토큰 윈도우를 맞춰 캘리브레이션된 값입니다.
@@ -151,29 +151,58 @@ python -m venv .venv          # Python 3.13 (macOS arm64) 기준
 - 질의도 문서와 동일한 정규화(`normalize_text`)를 거쳐 동일 모델로 임베딩 (도메인 일관성).
 - FAISS top-k 탐색 후 코사인 유사도 점수와 청크 메타데이터(공고 번호, 제목, 섹션, 원문 발췌)를 랭킹 출력.
 
+## 데이터 원천 (`backend/lawcast.db`)
+
+샘플 추출의 기본 소스는 **`backend/lawcast.db`** (백엔드 개발 DB)입니다. 두 DB를 실제로
+비교 검증한 결과:
+
+| 항목 | `lawcast_prod.db` (루트) | `backend/lawcast.db` |
+| ---- | ------------------------ | -------------------- |
+| `notice_archives` 행 수 | 20,177 | 20,895 (상위집합: 신규 718건) |
+| 스키마 | 구버전 (스크린샷 캡처 상태 컬럼 없음) | 최신 (`screenshot_capture_status/error` 등 포함) |
+| 공유 20,177건 중 내용 불일치 | — | 29건 (소스 갱신 반영) |
+| 샘플 대상 12건 본문 동일성 | — | 12/12 동일 |
+
+`lawcast_prod.db`는 루트의 프로덕션 스냅샷이며 `--db ../lawcast_prod.db`로 여전히 사용할
+수 있습니다. 샘플 선택은 길이 구간별 최신순이므로 데이터가 갱신되면 샘플 대상 공고가
+바뀔 수 있습니다.
+
 ## 실행 결과 예시
 
 ```
-query: 임대차 계약에서 세입자 보호
-  1. score=0.4572 notice=2220607 [제안이유] 상가건물 임대차보호법 일부개정법률안
-     또한 임차인의 귀책사유 없이 계약이 종료되는 경우 영업손실, 권리금 및 이전비용 ...
-  2. score=0.4303 notice=2220607 [제안이유] 상가건물 임대차보호법 일부개정법률안
-  3. score=0.4194 notice=2220607 [제안이유] 상가건물 임대차보호법 일부개정법률안
+query: 국가 연구시설과 장비의 공동 활용
+  1. score=0.5192 notice=2221463 [제안이유] 국가연구시설·장비의 관리 및 활용 등에 관한 법률안 (송기헌의원 등 10인)
+     그러나 표준지침에는 이를 지키지 아니한 보유기관을 제재할 수단이 없어 연구시설ㆍ장비를 도입하고도 ...
+  2. score=0.4774 notice=2221463 [제안이유] 국가연구시설·장비의 관리 및 활용 등에 관한 법률안 (송기헌의원 등 10인)
+  3. score=0.4461 notice=2221463 [주요내용] 국가연구시설·장비의 관리 및 활용 등에 관한 법률안 (송기헌의원 등 10인)
 ```
 
-"세입자"라는 단어가 원문에 없는 "임차인" 관련 청크가 최상위로 검색됩니다 — 키워드 검색(FTS5)과
-차별화되는 의미 검색의 동작을 보여줍니다.
+질의어 "공동 활용"이 원문에 직접 없어도 관련 청크가 최상위로 검색됩니다 — 키워드 검색(FTS5)과
+차별화되는 의미 검색의 동작을 보여줍니다. 참고: 임베딩 대상은 본문(`proposalReason`) 청크이며
+공고 제목은 메타데이터로만 사용되므로, 제목에만 등장하는 어휘 질의는 본문 서술 기반 검색보다
+성능이 낮을 수 있습니다.
+
+## 린트 / 포맷
+
+ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규칙, 100자, single quote).
+
+```bash
+.venv/bin/ruff check --fix .        # 린트 (자동 수정)
+.venv/bin/ruff format .             # 포맷
+.venv/bin/ruff check . && .venv/bin/ruff format --check .   # 통과 검증
+```
 
 ## 테스트
 
 ```bash
-.venv/bin/python -m pytest tests/ -q    # 19 passed
+.venv/bin/python -m pytest tests/ -q    # 29 passed
 ```
 
 - `test_preprocess.py` — 정규화(개행 보존, NFC, HTML 제거), 섹션 감지
-- `test_chunking.py` — 청크 크기 상한, 오버랩, 섹션 전파, chunk_id 유일성, 폴백
-- `test_indexing_search.py` — FAISS 저장/로드 라운드트립, 랭킹/메타데이터 매핑 (스텁 임베더로
-  모델 다운로드 없이 실행)
+- `test_chunking.py` — 청크 크기 상한, 오버랩, 섹션 전파, chunk_id 유일성, 중복 notice_num 거부, 폴백
+- `test_indexing_search.py` — FAISS 저장/로드 라운드트립, 랭킹 결정성(동점 tie-break), 산출물
+  지문·모델 불일치 거부 (스텁 임베더로 모델 다운로드 없이 실행)
+- `test_entrypoints.py` — 실제 스크립트 서브프로세스 실행: 빈 입력·빈 공고·잘못된 `--k` 처리
 
 ## 설계 결정 및 한계
 

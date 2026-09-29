@@ -4,6 +4,7 @@ Uses `faiss.IndexFlatIP` over L2-normalized vectors, which makes inner
 product equal to cosine similarity. Exact search is fine at LawCast scale
 (tens of thousands of chunks); swap in an IVF/PQ index later if needed.
 """
+
 from __future__ import annotations
 
 import json
@@ -58,12 +59,10 @@ class VectorIndex:
         payload: dict = {'chunk_ids': list(chunk_ids)}
         if meta:
             payload.update(meta)
-        id_map_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8'
-        )
+        id_map_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
     @classmethod
-    def load(cls, index_path: Path, id_map_path: Path) -> tuple['VectorIndex', dict]:
+    def load(cls, index_path: Path, id_map_path: Path) -> tuple[VectorIndex, dict]:
         """Load a persisted index and return (index, payload).
 
         payload contains at least 'chunk_ids'; remaining keys are the meta
@@ -75,9 +74,7 @@ class VectorIndex:
         payload = json.loads(id_map_path.read_text(encoding='utf-8'))
         return wrapper, payload
 
-    def search(
-        self, query_vector: np.ndarray, k: int | None = None
-    ) -> list[tuple[int, float]]:
+    def search(self, query_vector: np.ndarray, k: int | None = None) -> list[tuple[int, float]]:
         """Return (row_position, cosine_score) pairs sorted by score desc.
 
         k=None scores every vector. Ties are broken deterministically by row

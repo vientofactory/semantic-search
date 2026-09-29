@@ -1,0 +1,16 @@
+# Ruff configuration for the LawCast semantic-search side project.
+# Usage:
+#   ruff check --fix .   # lint (with autofix)
+#   ruff format .        # format
+#   ruff check . && ruff format --check .   # verify clean
+line-length = 100
+target-version = "py313"
+exclude = [".venv"]
+
+[lint]
+# E/W: pycodestyle, F: pyflakes, I: import sorting, UP: pyupgrade
+select = ["E", "F", "W", "I", "UP"]
+
+[format]
+# Matches the project's existing single-quote style.
+quote-style = "single"

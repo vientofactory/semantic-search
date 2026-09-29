@@ -6,6 +6,7 @@ and prints top-k results ranked by cosine similarity.
 Usage:
     python scripts/04_search.py --query "ESG 공시 의무화" [--query "..."] [--k 5]
 """
+
 from __future__ import annotations
 
 import argparse
