@@ -1,12 +1,8 @@
 """Tests for stage 1a: normalization and section detection."""
 
-import sys
 import unicodedata
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from lawcast_semantic.preprocess import (  # noqa: E402
+from lawcast_semantic.preprocess import (
     DEFAULT_SECTION,
     detect_sections,
     normalize_text,

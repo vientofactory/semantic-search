@@ -1,8 +1,9 @@
-"""Stage 1a: raw legislation text cleaning and structure detection.
+"""Stage 1a: legislation text cleaning and structure detection.
 
-Input is the `proposalReason` field of LawCast `notice_archives` rows: Korean
-proposal texts with standalone section headers ("제안이유", "주요내용", ...) and
-enumerated items ("가.", "나.", "1)", ...) separated by newlines.
+Input is the `proposalReason` field of LawCast `notice_archives` rows (see
+`datasource.py` — the corpus text is the DB column as stored, not HTML-derived):
+Korean proposal texts with standalone section headers ("제안이유", "주요내용", ...)
+and enumerated items ("가.", "나.", "1)", ...) separated by newlines.
 """
 
 from __future__ import annotations
@@ -10,6 +11,9 @@ from __future__ import annotations
 import re
 import unicodedata
 
+# Residual-markup guard only: DB `proposalReason` values are stored as plain
+# text, so this is a no-op for well-formed data. It never "extracts" text from
+# HTML — it drops stray tags if a source ever leaks markup into the column.
 _HTML_TAG_RE = re.compile(r'<[^>]+>')
 _ZERO_WIDTH_RE = re.compile(r'[\u200b\u200c\u200d\ufeff]')
 _HORIZONTAL_SPACE_RE = re.compile(r'[ \t\u3000]+')
@@ -27,7 +31,7 @@ def normalize_text(text: str | None) -> str:
     """Clean raw proposal text without destroying its structure.
 
     - Unicode NFC normalization (Korean compatibility jamo safety)
-    - strip HTML tags / zero-width characters
+    - drop residual markup / zero-width characters (guard, not extraction)
     - collapse horizontal whitespace, but PRESERVE line breaks: newlines are
       meaningful paragraph structure in `proposalReason` and must not be
       collapsed into spaces
