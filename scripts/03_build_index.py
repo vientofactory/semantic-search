@@ -17,9 +17,9 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import config  # noqa: E402
-from lawcast_semantic import VectorIndex  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run-from-source bootstrap
+from lawcast_semantic import config  # noqa: E402
+from lawcast_semantic.indexing import VectorIndex  # noqa: E402
 
 
 def main() -> None:
