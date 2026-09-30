@@ -14,9 +14,14 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import config  # noqa: E402
-from lawcast_semantic import KoreanEmbedder, SemanticSearcher  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run-from-source bootstrap
+from lawcast_semantic.omp_env import use_single_threaded_omp  # noqa: E402
+
+use_single_threaded_omp()
+
+from lawcast_semantic import config  # noqa: E402
+from lawcast_semantic.embedding import KoreanEmbedder  # noqa: E402
+from lawcast_semantic.search import SemanticSearcher  # noqa: E402
 
 
 def main() -> None:
@@ -29,8 +34,12 @@ def main() -> None:
     if args.k < 1:
         parser.error('--k must be a positive integer')
 
-    embedder = KoreanEmbedder(args.model, device=config.DEVICE)
-    searcher = SemanticSearcher.load(embedder)
+    embedder = KoreanEmbedder(args.model)
+    try:
+        searcher = SemanticSearcher.load(embedder)
+    except ValueError as exc:
+        # Stale/mismatched artifacts are user errors: report like --k validation.
+        parser.error(str(exc))
     print(f'model: {args.model} | indexed chunks: {len(searcher.chunk_ids)}\n')
 
     for query in args.query:
