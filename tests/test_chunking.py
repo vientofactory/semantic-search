@@ -1,13 +1,13 @@
 """Tests for stage 1b: section-aware chunking."""
 
-import sys
-from pathlib import Path
-
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from lawcast_semantic.chunking import chunk_notice, chunk_notices, split_sentences  # noqa: E402
+from lawcast_semantic.chunking import (
+    chunk_notice,
+    chunk_notices,
+    compose_embedding_text,
+    split_sentences,
+)
 
 
 def make_notice(proposal_reason: str, notice_num: int = 100) -> dict:
@@ -94,3 +94,32 @@ def test_duplicate_notice_num_rejected():
     ]
     with pytest.raises(ValueError, match='duplicate notice_num'):
         chunk_notices(notices)
+
+
+def test_compose_embedding_text_puts_subject_first():
+    """Title vocabulary must enter the embedding input as context."""
+    assert compose_embedding_text('공급망 안정화 지원법', '위기품목 수급 안정 내용') == (
+        '공급망 안정화 지원법\n위기품목 수급 안정 내용'
+    )
+
+
+def test_compose_embedding_text_without_subject_keeps_text():
+    assert compose_embedding_text('', '본문만 있음') == '본문만 있음'
+    assert compose_embedding_text('   ', '본문만 있음') == '본문만 있음'
+
+
+def test_compose_embedding_text_does_not_duplicate_fallback_subject():
+    """Fallback chunks already embed the subject; composing must not repeat it."""
+    chunks = chunk_notice(make_notice(''))
+    composed = compose_embedding_text(chunks[0].subject, chunks[0].text)
+    assert composed == chunks[0].text
+
+
+def test_subject_context_respects_char_budget():
+    """A long title shrinks the body budget; the embedding input still fits."""
+    notice = make_notice('본문\n' + '긴 문장이지만 경계에서 분리됨. ' * 40)
+    notice['subject'] = '경제안보를 위한 공급망 안정화 지원 기본법 일부개정법률안' * 2
+    chunks = chunk_notice(notice, max_chars=120, overlap_chars=30, min_chars=10)
+    assert chunks
+    for chunk in chunks:
+        assert len(compose_embedding_text(chunk.subject, chunk.text)) <= 120

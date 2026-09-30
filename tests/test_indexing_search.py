@@ -5,17 +5,14 @@ embedding model.
 """
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from lawcast_semantic.chunking import compute_chunks_fingerprint  # noqa: E402
-from lawcast_semantic.indexing import VectorIndex  # noqa: E402
-from lawcast_semantic.search import SemanticSearcher  # noqa: E402
+from lawcast_semantic.chunking import compute_chunks_fingerprint, write_chunks_jsonl
+from lawcast_semantic.indexing import VectorIndex
+from lawcast_semantic.search import SemanticSearcher
 
 
 class StubEmbedder:
@@ -75,10 +72,7 @@ def build_artifacts(
         },
     )
     chunks_path = tmp_path / 'chunks.jsonl'
-    chunks_path.write_text(
-        '\n'.join(json.dumps(record, ensure_ascii=False) for record in records),
-        encoding='utf-8',
-    )
+    write_chunks_jsonl(records, chunks_path)
     return chunks_path, index_path, id_map_path
 
 
@@ -165,11 +159,43 @@ def test_searcher_rejects_stale_chunks(tmp_path: Path):
     chunks_path, index_path, id_map_path = build_artifacts(tmp_path, records, vectors)
 
     records[1]['text'] = '완전히 다른 텍스트로 바뀌었지만 임베딩은 그대로임'
-    chunks_path.write_text(
-        '\n'.join(json.dumps(record, ensure_ascii=False) for record in records),
-        encoding='utf-8',
-    )
+    write_chunks_jsonl(records, chunks_path)
     with pytest.raises(ValueError, match='out of sync'):
+        SemanticSearcher.load(
+            StubEmbedder(vectors[0]),
+            chunks_path=chunks_path,
+            index_path=index_path,
+            id_map_path=id_map_path,
+        )
+
+
+def test_searcher_rejects_stale_subject_change(tmp_path: Path):
+    """The subject is embedded as context, so editing it invalidates vectors too."""
+    records = make_records()
+    vectors = make_vectors()
+    chunks_path, index_path, id_map_path = build_artifacts(tmp_path, records, vectors)
+
+    records[1]['subject'] = '완전히 다른 제목'
+    write_chunks_jsonl(records, chunks_path)
+    with pytest.raises(ValueError, match='out of sync'):
+        SemanticSearcher.load(
+            StubEmbedder(vectors[0]),
+            chunks_path=chunks_path,
+            index_path=index_path,
+            id_map_path=id_map_path,
+        )
+
+
+def test_searcher_rejects_index_id_map_row_mismatch(tmp_path: Path):
+    """An index and id map from different builds must fail loudly, not mislabel hits."""
+    records = make_records()
+    vectors = make_vectors()
+    chunks_path, index_path, id_map_path = build_artifacts(tmp_path, records, vectors)
+
+    payload = json.loads(id_map_path.read_text(encoding='utf-8'))
+    payload['chunk_ids'] = payload['chunk_ids'] + ['chunk-extra']
+    id_map_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    with pytest.raises(ValueError, match='different builds'):
         SemanticSearcher.load(
             StubEmbedder(vectors[0]),
             chunks_path=chunks_path,

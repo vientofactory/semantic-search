@@ -6,13 +6,11 @@ Korean model used at index time, and ranks chunks by cosine similarity.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import config
-
-from .chunking import compute_chunks_fingerprint
+from . import config
+from .chunking import compute_chunks_fingerprint, load_chunks_jsonl
 from .indexing import VectorIndex
 from .preprocess import normalize_text
 
@@ -53,13 +51,16 @@ class SemanticSearcher:
         model provenance) so partial pipeline re-runs fail loudly instead of
         silently mixing stale scores with fresh text.
         """
-        records = []
-        with chunks_path.open(encoding='utf-8') as handle:
-            for line in handle:
-                if line.strip():
-                    records.append(json.loads(line))
+        records = load_chunks_jsonl(chunks_path)
         chunks_by_id = {record['chunk_id']: record for record in records}
         index, meta = VectorIndex.load(index_path, id_map_path)
+
+        if index.index.ntotal != len(meta['chunk_ids']):
+            raise ValueError(
+                f'faiss index holds {index.index.ntotal} rows but id_map lists '
+                f'{len(meta["chunk_ids"])} chunk ids; the index and id map are from '
+                'different builds — re-run scripts/03_build_index.py'
+            )
 
         expected_fingerprint = compute_chunks_fingerprint(records)
         if meta.get('chunks_fingerprint') != expected_fingerprint:
