@@ -8,7 +8,7 @@ LawCast의 법률안(입법예고) 데이터를 대상으로 의미(시맨틱) �
 ```mermaid
 flowchart LR
     db[("backend/lawcast.db")] -->|1. 전처리 + 청킹| chunks["chunks.jsonl<br/>96,754 청크"]
-    db -.->|0. 샘플 추출(평가용)| sample["sample_notices.jsonl"]
+    db -.->|"0. 샘플 추출(평가용)"| sample["sample_notices.jsonl"]
     chunks -->|2. 토크나이징 + 임베딩| emb["embeddings.npz<br/>96,754 x 1,024 float32"]
     emb -->|3. FAISS 인덱싱| idx["faiss.index + id_map.json"]
     query(["query"]) --> search["4. 질의 처리 + 유사도"]
