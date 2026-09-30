@@ -1,9 +1,9 @@
 """Stage 2: tokenization and embedding extraction.
 
 Wraps a Korean-specialized sentence-transformers model (default:
-`jhgan/ko-sbert-sts`, Korean Sentence-BERT fine-tuned on KorSTS) and exposes
+`nlpai-lab/KURE-v1`, Korean retrieval-tuned bge-m3) and exposes
 both the tokenizer step (token counts / truncation against the model's
-max sequence length) and the embedding step (768-dim pooled vectors,
+max sequence length) and the embedding step (pooled vectors,
 L2-normalized for cosine similarity).
 """
 
@@ -14,7 +14,7 @@ from collections.abc import Iterable
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-import config
+from . import config
 
 
 class KoreanEmbedder:
