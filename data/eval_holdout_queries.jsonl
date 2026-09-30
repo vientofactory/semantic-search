@@ -1,0 +1,24 @@
+{"query": "예보법 개정", "notice_num": 2221498, "kind": "abbr", "intent": "예금자보호법 개정"}
+{"query": "한은 전북 이전", "notice_num": 2221496, "kind": "abbr", "intent": "한국은행 본점 이전 (형제안 2221377은 외환보유액 공표)"}
+{"query": "KIC 관련법 개정", "notice_num": 2221499, "kind": "abbr", "intent": "한국투자공사법 개정"}
+{"query": "스토킹처벌법 강화", "notice_num": 2221200, "kind": "abbr", "intent": "스토킹범죄 처벌법 개정"}
+{"query": "5·18 유공자 위탁병원 진료", "notice_num": 2221163, "kind": "abbr", "intent": "5·18 유공자 의료지원 (형제안 2221314는 유족 교육·취업 지원)"}
+{"query": "보이스피싱 특별법", "notice_num": 2221352, "kind": "abbr", "intent": "전기통신금융사기 특별법 (보이스피싱 = 전기통신금융사기의 통칭)"}
+{"query": "고준위방폐물 특별법", "notice_num": 2221456, "kind": "abbr", "intent": "고준위 방사성폐기물 특별법 (통상 약칭)"}
+{"query": "해외직구할 때 관세 얼마나 내야 해?", "notice_num": 2221485, "kind": "colloquial", "intent": "관세법 개정"}
+{"query": "요양원 비용 국가에서 보태주나요?", "notice_num": 2221451, "kind": "colloquial", "intent": "노인장기요양보험법 개정"}
+{"query": "아파트 관리비 장부 공개하나요?", "notice_num": 2221444, "kind": "colloquial", "intent": "공동주택관리법 개정"}
+{"query": "백화점이 납품업체 갑질하면 어디에 신고해요?", "notice_num": 2221450, "kind": "colloquial", "intent": "대규모유통업법 (유통 3법 중 백화점·납품업계 관계)"}
+{"query": "가맹 본사 갑질 피해 볼 수 있는 법 있어?", "notice_num": 2221449, "kind": "colloquial", "intent": "가맹사업거래법 (유통 3법 중 가맹거래)"}
+{"query": "시골에 병원이 너무 없어요", "notice_num": 2221462, "kind": "colloquial", "intent": "농어촌 등 보건의료 특별조치법"}
+{"query": "통화 녹음해서 증거로 써도 되나요?", "notice_num": 2221203, "kind": "colloquial", "intent": "통신비밀보호법 개정"}
+{"query": "중소기업에서 사람 뽑기가 너무 힘들어요", "notice_num": 2221443, "kind": "colloquial", "intent": "중소기업 인력지원 특별법"}
+{"query": "의료용 대마 수입", "notice_num": 2219769, "kind": "synonym", "intent": "대마 취급 기준 (형제안 2221461은 마약류 취급 제한 전반)"}
+{"query": "디자인 특허 출원", "notice_num": 2221503, "kind": "synonym", "intent": "디자인보호법 (사용자는 디자인을 '디자인 특허'라 통칭)"}
+{"query": "재개발 재건축 규제", "notice_num": 2221468, "kind": "synonym", "intent": "도시 및 주거환경정비법"}
+{"query": "공공임대주택 공급 확대", "notice_num": 2221120, "kind": "synonym", "intent": "공공주택 특별법"}
+{"query": "자영업자 복지 지원", "notice_num": 2221502, "kind": "synonym", "intent": "소상공인 복지법 (자영업자 = 소상공인의 일상어)"}
+{"query": "여성 CEO 창업 지원", "notice_num": 2221513, "kind": "synonym", "intent": "여성기업지원에 관한 법률"}
+{"query": "자연 보호구역 확대", "notice_num": 2221442, "kind": "synonym", "intent": "생물다양성법 보호지역 확대 (형제안 2221419는 생태계 보전·이용 연계)"}
+{"query": "청년 일자리 늘리기", "notice_num": 2221454, "kind": "synonym", "intent": "청년고용촉진 특별법"}
+{"query": "개발원조 ODA 예산", "notice_num": 2221114, "kind": "synonym", "intent": "국제개발협력기본법 (개발원조 = 국제개발협력)"}
