@@ -91,9 +91,12 @@ semantic-search/
 │   └── backup-sample-300/        #   300건 샘플 시대 산출물 백업 (아래 교체 규칙 참조)
 ├── service/                      # 온라인 어댑터: 백엔드 연동용 HTTP 사이드카
 │   └── app.py                    #   FastAPI (/health, /search) — 엔진은 백그라운드 1회 로딩
-├── tests/                        # pytest 53종 (모델 다운로드 없이 동작)
+├── tests/                        # pytest 110종 (모델 다운로드 없이 동작)
 │   └── conftest.py               #   테스트 스위트 공용 부트스트랩 (sys.path 1곳에서만 조정)
-├── requirements.txt
+├── Dockerfile                    # 사이드카 컨테이너 이미지 (CPU torch, non-root)
+├── .dockerignore                 #   빌드 컨텍스트에서 .venv/artifacts/data/tests 제외
+├── requirements.txt              # 로컬 .venv용 소스 의존성
+├── requirements.lock             #   pip freeze 고정본 (Docker 빌드용, 재현 가능)
 └── .venv/                        # 로컬 가상환경 (직접 생성)
 ```
 
@@ -104,6 +107,10 @@ cd semantic-search
 python -m venv .venv          # Python 3.13 (macOS arm64) 기준
 .venv/bin/pip install -r requirements.txt
 ```
+
+의존성 변경 후 테스트를 통과하면 `requirements.lock`을 재생성하세요
+(Docker 이미지는 재현 가능한 빌드를 위해 lock에서 설치합니다):
+`.venv/bin/pip freeze > requirements.lock`
 
 모델(`nlpai-lab/KURE-v1`, 가중치 ~2.2GB)은 최초 실행 시 HuggingFace에서 자동 다운로드됩니다.
 
@@ -174,12 +181,91 @@ curl http://127.0.0.1:8300/health
 curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호&k=3'
 ```
 
-- `GET /health` → `{status: loading|ready|failed, model, indexedChunks, error}`
-- `GET /search?query=&k=` → 청크 랭킹 결과. query 1~500자(공백만은 400), k 1~50 (기본 5).
+- `GET /health` → `{status: loading|ready|failed, model, indexedChunks, error}` + 갱신 관측
+  필드 5종: `generation` (성공적 로드/스왑마다 증가), `reloadError`, `lastUpdateAt`,
+  `lastUpdateResult` (`changed|unchanged|failed|skipped`), `lastUpdateError`. 추가 계약이며
+  기존 소비자는 `status`만 읽습니다.
+- `GET /search?query=&k=` → 청크 랭킹 결과. query 1~500자(공백만은 400), k 1~200 (기본 5).
+  **k의 단위는 청크**입니다: 백엔드는 chunk→공고 중복 제거 후에도 공고 k개를 채우기 위해
+  청크를 과요청하며, k 상한(`MAX_K`)은 `backend/src/modules/semantic-search/semantic-search.contract.spec.ts`가
+  양쪽 계약과 함께 고정합니다.
   엔진 로딩 중/로딩 실패 시 503 + 사유. 모델은 시작 시 백그라운드에서 1회 로딩되며
   요청을 블로킹하지 않고, 로딩 실패는 프로세스 재시작 전까지 유지됩니다.
 - 백엔드 설정: `SEMANTIC_SEARCH_ENABLED` / `SEMANTIC_SEARCH_API_URL`(기본
   `http://127.0.0.1:8300`) / `SEMANTIC_SEARCH_TIMEOUT` (기본 10초).
+  루트 `docker-compose.yml`에서 백엔드 컨테이너는 `SEMANTIC_SEARCH_API_URL=
+  http://semantic-search:8300`로 오버라이드되어 사이드카 컨테이너에 도달합니다.
+
+## 프로덕션 배포 (Docker)
+
+루트 `docker-compose.yml`의 `semantic-search` 서비스로 배포됩니다 (이미지 빌드는
+`Dockerfile`, 빼는 대상은 `.dockerignore`가 단일 소유):
+
+```bash
+docker compose up -d --build semantic-search   # 루트에서
+curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버깅용)
+```
+
+- **이미지는 코드만 담습니다**: 인덱스 산출물(~785 MiB, gitignore)은 호스트의
+  `semantic-search/artifacts/`를 `/app/artifacts`에 바인드 마운트하고, 모델 가중치는
+  `lawcast_semantic_hf_cache` 볼륨(`HF_HOME=/cache/huggingface`)에 1회 다운로드됩니다.
+  산출물 위치는 `LAWCAST_SEMANTIC_ARTIFACTS_DIR`로 바꿀 수 있습니다.
+- **인덱스 준비는 배포 전제 조건입니다**: 파이프라인(1→3) 또는 증분 갱신으로
+  `artifacts/` 세트를 만든 뒤 컨테이너를 기동하세요. 빈 산출물이면 `/health`가
+  `failed`를 보고합니다.
+- **헬스체크**: compose가 소유하며 엔진 로드 실패(`status: failed`)에서만 unhealthy입니다.
+  최초 기동의 모델 다운로드/로딩(`loading`)은 healthy로 봅니다 (백엔드가 키워드로 폴백).
+- **torch는 CPU 휠로 설치합니다** (`download.pytorch.org/whl/cpu`): PyPI 기본 linux
+  휠은 사용하지 않는 CUDA 의존성 수 GB를 끌어옵니다.
+- **증분 갱신 반영**: `scripts/06_incremental_update.py`가 아티팩트를 갱신하면 사이드카가
+  자동 반영합니다 — 스케줄 틱이 디스크 지문과 서빙 세대를 비교해 load–validate–swap하고
+  (지문 일치 시 재로드 생략), 수동으로는 `POST /reload`로 즉시 스왑합니다. 아티팩트를
+  직접 쓰는 호스트 작업은 아래 flock 규칙을 지켜야 합니다.
+
+### 정기 갱신 스케줄 · `POST /reload` · flock 규칙
+
+설계 출처: `agent_memories/08-semantic-search-production-deploy/incremental-update-pipeline-design.md`
+§4.2/§5.2. env 게이트는 전부 비활성/안전 기본값이라 스케줄 없이 `uvicorn`만 띄우는 호스트
+개발 실행은 이전과 동일합니다.
+
+| env | 기본값 | 의미 |
+| --- | --- | ------ |
+| `LAWCAST_SEMANTIC_DB_PATH` | *(빈값)* | 갱신 소스 DB 경로. **빈값 = 스케줄·부트 리페어 끔** |
+| `LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES` | `60` | 틱 주기(분). `0`도 끔 |
+| `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE` | off | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시) |
+
+- **틱** (사이드카 lifespan 스레드): 주기 ±10% 지터로 DB 읽기(`mode=ro`) → 증분 plan →
+  삭제 가드 (삭제 >100건 **그리고** >20%면 거부) → 원자적 쓰기 → load–validate–swap.
+  엔진이 `ready`일 때만 돌고 `failed`면 루프를 멈춥니다. 결과는 `/health.lastUpdateResult`로 관측.
+- **`POST /reload`** (내부 네트워크, 무인증) — 디스크 아티팩트를 즉시 스왑:
+  `200` (health 본문, generation 증가) / `409` (엔진 미준비, 또는 갱신 진행 중 —
+  `an index update is already in progress`) / `503` (새 세대 검증 실패, 이전 세대가 계속
+  서빙, 사유는 `reloadError`).
+- **flock 규칙 (호스트 수동 실행)**: 스케줄 틱은 아티팩트 디렉터리의 `.update.lock`을
+  flock으로 잡고 실행하며, 점유 중이면 다른 틱/수동 실행과 겹치지 않습니다
+  (`lastUpdateResult=skipped`). `06_incremental_update.py` 자체는 이 lock을 잡지 않으므로
+  수동 실행 시 `flock semantic-search/artifacts/.update.lock -c '...'`로 감싸거나
+  (Linux), macOS에는 `flock(1)`이 없으니 실행 중 스케줄을 끈 뒤 (`DB_PATH` 미설정) 실행하세요.
+
+배포 라이프사이클 실측치 (2026-09-30, 상세 기록은 위 plan.md):
+
+| 시나리오 | 실측 |
+| --- | --- |
+| 재배포 (`down` + `up`, 캐시 볼륨 유지) | 재다운로드 없이 `loading` → `ready` 17초 |
+| 콜드 캐시 최초 기동 | 모델 다운로드(2.2GB) 전체 동안 `loading`, 완료 시점에만 `ready` (~400초, 네트워크 의존) — 다운로드 완료 전 ready 없음 |
+| 로드 실패(모델/아티팩트) | `failed` + `/search` 503, 자동 재시도 없음 (재시작 전까지 유지) |
+| 복구 | 원인 수정 후 재생성 → ~16초 만에 `ready` (환경변수가 같으면 재시작만으로는 복구 안 됨) |
+
+**검증 시 주의**: 호스트에 이미 8300 리스너(예: 로컬 개발용 `uvicorn service.app:app`)가
+있으면 게시 포트 트래픽이 그 프로세스로 섀도잉되어 컨테이너가 아닌 다른 엔진을 측정하게
+됩니다. 컨테이너 내부(`/health`) 또는 서비스 DNS(`http://semantic-search:8300`)로
+확인하세요 (백엔드는 서비스 DNS를 사용하므로 영향 없음).
+
+백엔드 연동 end-to-end 검증 완료 (2026-09-30): 백엔드의 실제
+`SemanticSearchService`/`SemanticSearchController` 코드가 `http://semantic-search:8300`로
+실제 HTTP 질의를 보내 응답을 소비하는 전체 경로(네스티 HTTP 파이프라인 포함)를 실측했고
+계약 불일치 없음 — 응답 shape, k 전달, 4xx/503/네트워크 폴백 분기 전부 계약대로
+(`agent_memories/08-.../plan.md`에 상세 기록).
 
 ## 라이브러리 구조 및 데이터 흐름 (리팩터 기록)
 
@@ -436,7 +522,7 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
 ## 테스트
 
 ```bash
-.venv/bin/python -m pytest tests/ -q    # 53 passed
+.venv/bin/python -m pytest tests/ -q    # 110 passed
 ```
 
 - `test_preprocess.py` — 정규화(개행 보존, NFC, HTML 제거), 섹션 감지
@@ -451,6 +537,8 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
 - `test_entrypoints.py` — 실제 스크립트 실행: 빈 입력·빈 공고·DB 직접 학습(`--db`)·잘못된 `--k`·빈 평가셋·
   경량 임포트 시 모델 스택 미로딩(라이브러리/CLI 분리 경계)·
   산출물 불일치의 깔끔한 error 표기 (트레이스백 없음)
+- `test_config.py` / `test_update_runner.py` / `test_service.py` — env 게이트(§4.2), 스케줄·부트
+  리페어·스왑/롤백 계약(§5~§6), `POST /reload` 경계와 로딩 단계 분리 (전체 110종의 대부분)
 
 ## 설계 결정 및 한계
 

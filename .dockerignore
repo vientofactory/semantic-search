@@ -1,0 +1,13 @@
+# Keep the build context lean: local env, caches, and heavy non-image files.
+# artifacts/ (~785 MiB index set) is bind-mounted at runtime and must never be
+# baked into the image.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+data/
+artifacts/
+.git/
+.DS_Store

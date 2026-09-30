@@ -1,13 +1,19 @@
 """Tests for the semantic search sidecar service (no model download).
 
 The engine loader is stubbed so validation, state handling and response
-shapes are exercised without the model stack.
+shapes are exercised without the model stack. The `phases` fixture drives
+the REAL `load_engine` with fakes for the lazy model exports (design §6.1).
 """
 
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
@@ -27,7 +33,7 @@ def client(monkeypatch):
             )
         ][:k]
 
-    def ready_loader(state):
+    def ready_loader(state, boot_repair=None):
         state.mark_ready(
             SimpleNamespace(search=stub_search, chunk_ids=['2220607-0000']), 'stub-model'
         )
@@ -60,13 +66,16 @@ def test_search_rejects_blank_and_overlong_query(client):
 
 def test_search_rejects_out_of_range_k(client):
     assert client.get('/search', params={'query': '질의', 'k': 0}).status_code == 422
-    assert client.get('/search', params={'query': '질의', 'k': 51}).status_code == 422
+    assert client.get('/search', params={'query': '질의', 'k': 201}).status_code == 422
+    # k is a chunk count: the backend over-requests up to MAX_K chunks so
+    # chunk->notice dedup can fill its notice-level k.
+    assert client.get('/search', params={'query': '질의', 'k': 150}).status_code == 200
 
 
 def test_search_reports_engine_failure_as_503(monkeypatch):
     import service.app as app_module
 
-    def failed_loader(state):
+    def failed_loader(state, boot_repair=None):
         state.mark_failed('OSError: artifacts missing')
 
     monkeypatch.setattr(app_module, 'STATE', app_module.create_state())
@@ -84,7 +93,7 @@ def test_search_reports_engine_failure_as_503(monkeypatch):
 def test_search_reports_loading_state_as_503(monkeypatch):
     import service.app as app_module
 
-    def never_finishes(state):
+    def never_finishes(state, boot_repair=None):
         pass  # keep the engine in its initial 'loading' state
 
     monkeypatch.setattr(app_module, 'STATE', app_module.create_state())
@@ -100,3 +109,186 @@ def test_health_shape(client):
     assert health['model'] == 'stub-model'
     assert health['indexedChunks'] == 1
     assert health['error'] is None
+
+
+@pytest.fixture()
+def phases():
+    """Install deterministic stand-ins for lawcast_semantic's lazy exports.
+
+    Prior state is snapshotted from `vars()` directly: a plain getattr on a
+    PEP 562 export would import the real model stack (torch) into the suite.
+    """
+    import lawcast_semantic
+
+    missing = object()
+    saved = {
+        name: vars(lawcast_semantic).get(name, missing)
+        for name in ('KoreanEmbedder', 'SemanticSearcher')
+    }
+    cfg = SimpleNamespace(embed_error=None, outcomes=[], load_calls=[])
+
+    class FakeEmbedder:
+        model_name = 'stub-model'
+
+        def __init__(self):
+            if cfg.embed_error is not None:
+                raise cfg.embed_error
+
+    class FakeSearcher:
+        @classmethod
+        def load(cls, embedder, **_paths):
+            cfg.load_calls.append(embedder)
+            outcome = cfg.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    lawcast_semantic.KoreanEmbedder = FakeEmbedder
+    lawcast_semantic.SemanticSearcher = FakeSearcher
+    yield cfg
+    for name, original in saved.items():
+        if original is missing:
+            delattr(lawcast_semantic, name)
+        else:
+            setattr(lawcast_semantic, name, original)
+
+
+def test_load_engine_success_marks_ready(phases):
+    import service.app as app_module
+
+    loaded = SimpleNamespace(chunk_ids=['stub-0000'], chunks_by_id={})
+    phases.outcomes.append(loaded)
+    state = app_module.create_state()
+    app_module.load_engine(state)
+
+    assert state.status == 'ready'
+    assert state.searcher is loaded
+    assert state.model_name == 'stub-model'
+    assert state.indexed_chunks == 1
+
+
+def test_embedder_phase_failure_never_calls_repair(monkeypatch, phases):
+    """Discrimination is the phase, not the exception type (§6.1).
+
+    The same ValueError shape that phase 2 treats as repairable must go
+    straight to `failed` when raised by the embedder phase.
+    """
+    import service.app as app_module
+
+    monkeypatch.setattr(app_module.config, 'DB_PATH', '/data/lawcast.db')
+    phases.embed_error = ValueError('broken')
+    repair_calls = []
+
+    def boot_repair(embedder, db_path):
+        repair_calls.append((embedder, db_path))
+        return True
+
+    state = app_module.create_state()
+    app_module.load_engine(state, boot_repair=boot_repair)
+
+    assert state.status == 'failed'
+    assert 'ValueError: broken' in state.error
+    assert repair_calls == []
+    assert phases.load_calls == []
+
+
+def test_searcher_phase_failure_skips_repair_without_db_path(monkeypatch, phases):
+    """Scheduling disabled (empty DB_PATH) => behavior exactly as before."""
+    import service.app as app_module
+
+    monkeypatch.setattr(app_module.config, 'DB_PATH', '')
+    phases.outcomes.append(FileNotFoundError('chunks.jsonl missing'))
+    repair_calls = []
+
+    def boot_repair(embedder, db_path):
+        repair_calls.append(db_path)
+        return True
+
+    state = app_module.create_state()
+    app_module.load_engine(state, boot_repair=boot_repair)
+
+    assert state.status == 'failed'
+    assert 'chunks.jsonl missing' in state.error
+    assert repair_calls == []
+    assert len(phases.load_calls) == 1
+
+
+def test_searcher_phase_failure_runs_repair_and_recovers(monkeypatch, phases):
+    """Hook fires on the searcher phase only; True => re-load -> ready."""
+    import service.app as app_module
+
+    monkeypatch.setattr(app_module.config, 'DB_PATH', '/data/lawcast.db')
+    loaded = SimpleNamespace(chunk_ids=['stub-0000', 'stub-0001'], chunks_by_id={})
+    phases.outcomes.extend([FileNotFoundError('torn set'), loaded])
+    repair_calls = []
+
+    def boot_repair(embedder, db_path):
+        repair_calls.append((embedder, db_path))
+        return True
+
+    state = app_module.create_state()
+    app_module.load_engine(state, boot_repair=boot_repair)
+
+    assert len(repair_calls) == 1
+    embedder, db_path = repair_calls[0]
+    assert db_path == '/data/lawcast.db'
+    assert embedder.model_name == 'stub-model'
+    assert len(phases.load_calls) == 2  # failed once, re-loaded after repair
+    assert state.status == 'ready'
+    assert state.searcher is loaded
+    assert state.indexed_chunks == 2
+
+
+def test_repair_refusal_marks_failed_with_original_error(monkeypatch, phases):
+    import service.app as app_module
+
+    monkeypatch.setattr(app_module.config, 'DB_PATH', '/data/lawcast.db')
+    phases.outcomes.append(FileNotFoundError('torn set'))
+    repair_calls = []
+
+    def boot_repair(embedder, db_path):
+        repair_calls.append(db_path)
+        return False
+
+    state = app_module.create_state()
+    app_module.load_engine(state, boot_repair=boot_repair)
+
+    assert repair_calls == ['/data/lawcast.db']
+    assert state.status == 'failed'
+    assert 'torn set' in state.error
+
+
+def test_repair_hook_exception_is_contained(monkeypatch, phases):
+    """A hook bug must never trap the boot thread in `loading` (§6.1)."""
+    import service.app as app_module
+
+    monkeypatch.setattr(app_module.config, 'DB_PATH', '/data/lawcast.db')
+    phases.outcomes.append(FileNotFoundError('torn set'))
+
+    def boot_repair(embedder, db_path):
+        raise RuntimeError('runner bug')
+
+    state = app_module.create_state()
+    app_module.load_engine(state, boot_repair=boot_repair)
+
+    assert state.status == 'failed'
+    assert 'torn set' in state.error
+    assert 'boot repair failed: RuntimeError: runner bug' in state.error
+
+
+def test_import_service_app_stays_light():
+    """§6.1: `import service.app` must not pull the model stack."""
+    code = (
+        'import sys\n'
+        'import service.app\n'
+        "heavy = [name for name in ('torch', 'faiss') if name in sys.modules]\n"
+        "assert not heavy, f'heavy modules imported: {heavy}'\n"
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=PROJECT_ROOT,
+    )
+    assert result.returncode == 0, result.stderr

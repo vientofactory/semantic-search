@@ -1,6 +1,11 @@
 # LawCast semantic-search side project dependencies (Python 3.13, macOS arm64 tested).
 #
-# Korean embedding model (jhgan/ko-sbert-sts) is downloaded on first use
+# Human-edited source for local .venv installs. Production Docker builds install
+# `requirements.lock` (pip freeze of the test-verified venv) for reproducible
+# builds; after changing this file and re-running the tests, regenerate it:
+#   .venv/bin/pip freeze > requirements.lock
+#
+# Korean embedding model (nlpai-lab/KURE-v1) is downloaded on first use
 # from HuggingFace; no extra install needed.
 torch>=2.6
 sentence-transformers>=6.1
