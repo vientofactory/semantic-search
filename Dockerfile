@@ -35,10 +35,14 @@ RUN pip install torch==${TORCH_VERSION} --index-url https://download.pytorch.org
 COPY requirements.lock ./
 RUN pip install -r requirements.lock
 
-# Non-root runtime user. The named HF cache volume inherits this ownership on
-# first creation; the artifacts bind mount is host-owned and read-mostly.
-RUN addgroup --system semantic \
-    && adduser --system --ingroup semantic semantic \
+# Non-root runtime user, fixed at uid/gid 1001 to match the compose `user:`
+# override and the backend data-file uid: the named HF cache volume inherits
+# this ownership on copy-on-first-use, so the serving process can download and
+# refresh the KURE-v1 weights into its own cache without any manual chown.
+# The artifacts bind mount is host-owned and read-mostly.
+RUN addgroup --gid 1001 semantic \
+    && adduser --uid 1001 --ingroup semantic --disabled-password --gecos "" \
+        --no-create-home semantic \
     && mkdir -p /cache/huggingface /app/artifacts \
     && chown -R semantic:semantic /cache /app
 
