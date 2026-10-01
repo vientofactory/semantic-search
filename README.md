@@ -81,6 +81,7 @@ semantic-search/
 ├── Dockerfile / .dockerignore    # 사이드카 이미지 (CPU torch, non-root) / 빌드 제외 대상
 ├── requirements.txt              # 로컬 .venv용 소스 의존성
 ├── requirements.lock             # pip freeze 고정본 (Docker 빌드, 재현 가능)
+├── pyproject.toml                # 버전 단일 소유처 ([project].version) · 메타데이터 전용
 ├── ruff.toml                     # 린트·포맷 설정
 └── .venv/                        # 로컬 가상환경 (직접 생성)
 ```
@@ -410,6 +411,24 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
 - `test_incremental.py` — 증분 갱신 (행별 출처 다이제스트, 재사용·크래시 복구)
 - `test_config.py` / `test_update_runner.py` / `test_service.py` — env 게이트, 스케줄·부트
   리페어·스왑/롤백 계약, `POST /reload` 경계와 로딩 단계 분리
+- `test_version.py` — `pyproject.toml` 버전 형식(semver)·필수 메타데이터·메타데이터 전용 계약
+
+## 버전 · 릴리스
+
+- **버전의 단일 소유처는 `pyproject.toml`의 `[project].version`**입니다 (`backend`·`frontend`의
+  `package.json` 상응). 이 파일은 메타데이터 전용이며 의존성은 `requirements.txt` /
+  `requirements.lock`이, 린트 설정은 `ruff.toml`이 계속 소유합니다.
+- **태그 규약은 `semantic-search-vX.Y.Z`** (기존 `backend-v…`, `frontend-v…`와 동일). PR 병합 전에
+  버전을 올리고, `main`의 squash 커밋에 태그를 붙인 뒤 같은 이름으로 GitHub Release를 만듭니다.
+  전체 절차는 저장소 루트 `AGENTS.md`의 Deployment & Release Workflow가 단일 소유처입니다.
+
+```bash
+# 현재 버전 확인
+python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+
+# 발행된 태그 확인 (버전 충돌 검사도 여기서)
+git tag -l 'semantic-search-v*'
+```
 
 ## 설계 결정 및 한계
 

@@ -1,0 +1,21 @@
+# Version manifest for the semantic-search submodule.
+#
+# [project].version is the SINGLE SOURCE OF TRUTH for this submodule's version —
+# the Python counterpart of backend/frontend `package.json`:
+#   - bump it in the SAME PR that ships the change (AGENTS.md "Version bump before merge")
+#   - tag the squash commit on main as `semantic-search-vX.Y.Z`, then create the
+#     GitHub Release with that tag (AGENTS.md Deployment & Release Workflow, Step 1 -> Step 4)
+#   - the format is guarded by tests/test_version.py
+#
+# This file is metadata ONLY — it is not a build configuration:
+#   - dependencies are owned by requirements.txt (local .venv) / requirements.lock (Docker)
+#   - lint/format settings are owned by ruff.toml
+
+[project]
+name = "lawcast-semantic-search"
+version = "1.0.0"
+description = "LawCast semantic search pipeline and FastAPI sidecar (KURE-v1 + FAISS)"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Viento" }]
