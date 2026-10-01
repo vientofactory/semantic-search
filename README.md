@@ -411,7 +411,7 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
 - `test_incremental.py` — 증분 갱신 (행별 출처 다이제스트, 재사용·크래시 복구)
 - `test_config.py` / `test_update_runner.py` / `test_service.py` — env 게이트, 스케줄·부트
   리페어·스왑/롤백 계약, `POST /reload` 경계와 로딩 단계 분리
-- `test_version.py` — `pyproject.toml` 버전 형식과 메타데이터·메타데이터 전용 계약
+- `test_version.py` — `pyproject.toml` 버전 형식(semver)·필수 메타데이터·메타데이터 전용 계약
 
 ## 버전 · 릴리스
 
