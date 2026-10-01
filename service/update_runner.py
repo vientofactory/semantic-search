@@ -2,7 +2,7 @@
 
 Owns everything the sidecar does on a tick: read the backend DB through the
 mode=ro datasource, diff it against the committed artifacts, apply the delta
-through incremental's atomic write order, then load–validate–swap the serving
+through incremental's atomic write order, then load-validate-swap the serving
 searcher (`EngineState.reload`). Also exports the boot-repair hook that
 `load_engine` invokes on a phase-2 (artifact) failure.
 
@@ -143,7 +143,7 @@ def _tick(state: EngineState, embedder: Any) -> tuple[str, str | None]:
 
 
 def run_reload(state: EngineState, embedder: Any) -> str:
-    """Manual load–validate–swap behind POST /reload (design §5.2.1).
+    """Manual load-validate-swap behind POST /reload (design §5.2.1).
 
     The scheduler's exact swap path (`EngineState.reload`), taken under the
     artifact lock so a reload can never read a half-written artifact set.

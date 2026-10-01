@@ -100,7 +100,7 @@ class EngineState:
             self.loaded_fingerprint = fingerprint
 
     def reload(self, embedder: Any) -> bool:
-        """Load–validate–swap a new generation while the old one serves (§5.2).
+        """Load-validate-swap a new generation while the old one serves (§5.2).
 
         `status` is never touched, so readiness holds for the whole swap. A
         validation failure discards the new searcher, keeps the previous
@@ -267,7 +267,7 @@ def health() -> dict:
 
 @app.post('/reload')
 def manual_reload() -> dict:
-    """Manual load–validate–swap trigger (design §5.2.1) — hot reload, no restart.
+    """Manual load-validate-swap trigger (design §5.2.1) — hot reload, no restart.
 
     Reuses the scheduler's swap path (`EngineState.reload` under the artifact
     lock), so ops and host-pipeline runs (`01→03` on the host, then one curl)
