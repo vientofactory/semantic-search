@@ -17,7 +17,7 @@ OVERRIDE_ENV = 'LAWCAST_SEMANTIC_ARTIFACTS_DIR'
 STRIPPED_ENV = {
     OVERRIDE_ENV,
     'LAWCAST_SEMANTIC_DB_PATH',
-    'LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES',
+    'LAWCAST_SEMANTIC_UPDATE_CRON',
     'LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE',
 }
 
@@ -78,31 +78,40 @@ def test_artifacts_dir_empty_env_falls_back_to_default():
 
 
 def test_refresh_gates_default_to_disabled():
-    """Design §4.2: empty DB_PATH, 60-min interval, delete guard off."""
-    lines = run_config('DB_PATH', 'UPDATE_INTERVAL_MINUTES', 'ALLOW_LARGE_DELETE')
-    assert lines == ['', '60', 'False']
+    """Design §4.2: empty DB_PATH (the off gate), hourly cron, delete guard off."""
+    lines = run_config('DB_PATH', 'UPDATE_CRON', 'ALLOW_LARGE_DELETE')
+    assert lines == ['', '0 * * * *', 'False']
 
 
-def test_refresh_db_path_and_interval_env_overrides():
-    """compose sets DB_PATH; operators can tune the interval."""
+def test_refresh_db_path_and_cron_env_overrides():
+    """compose sets DB_PATH; operators can tune the schedule via cron expression."""
     lines = run_config(
         'DB_PATH',
-        'UPDATE_INTERVAL_MINUTES',
+        'UPDATE_CRON',
         env_overrides={
             'LAWCAST_SEMANTIC_DB_PATH': '/data/lawcast.db',
-            'LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES': '5',
+            'LAWCAST_SEMANTIC_UPDATE_CRON': '17 * * * *',
         },
     )
-    assert lines == ['/data/lawcast.db', '5']
+    assert lines == ['/data/lawcast.db', '17 * * * *']
 
 
-def test_update_interval_zero_keeps_scheduling_disabled():
-    """Design §4.2: 0 also disables (falsy for the runner)."""
+def test_update_cron_empty_keeps_scheduling_disabled():
+    """Design §4.2: empty expression also disables (falsy for the lifespan gate)."""
     lines = run_config(
-        'UPDATE_INTERVAL_MINUTES',
-        env_overrides={'LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES': '0'},
+        'UPDATE_CRON',
+        env_overrides={'LAWCAST_SEMANTIC_UPDATE_CRON': ''},
     )
-    assert lines == ['0']
+    assert lines == ['']
+
+
+def test_update_cron_is_stripped():
+    """Whitespace around the expression is cosmetic, not a validation failure."""
+    lines = run_config(
+        'UPDATE_CRON',
+        env_overrides={'LAWCAST_SEMANTIC_UPDATE_CRON': '  */10 * * * * '},
+    )
+    assert lines == ['*/10 * * * *']
 
 
 def test_allow_large_delete_true_spellings():

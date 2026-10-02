@@ -46,7 +46,14 @@ EMBED_BATCH_SIZE = int(os.environ.get('LAWCAST_SEMANTIC_BATCH', '32'))
 # an empty DB_PATH turns off both the scheduler and the boot-repair hook, so
 # host dev runs and tests behave exactly as before.
 DB_PATH = os.environ.get('LAWCAST_SEMANTIC_DB_PATH', '')
-UPDATE_INTERVAL_MINUTES = int(os.environ.get('LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES', '60'))
+# Cron expression driving the scheduled index update (standard 5-field:
+# minute hour day-of-month month day-of-week, evaluated in the process's local
+# time — compose sets TZ=Asia/Seoul). Default keeps design §4.2's hourly
+# cadence; an empty value disables scheduling entirely (replaces the retired
+# LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES, where `0` disabled). The expression
+# is parsed by the scheduler (service/update_runner.py), not here, so this
+# module stays an env-only, import-light config owner.
+UPDATE_CRON = os.environ.get('LAWCAST_SEMANTIC_UPDATE_CRON', '0 * * * *').strip()
 # Truthy spellings are defined exactly once, here (design §4.2): only '1',
 # 'true', 'yes', 'on' (case/space-insensitive) enable the override; every
 # other value fails safe with the shrink guard closed.

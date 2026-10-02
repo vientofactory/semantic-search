@@ -4,6 +4,7 @@ anyio==4.15.1
 certifi==2026.7.22
 click==8.5.0
 cloudpickle==3.1.2
+croniter==6.2.4
 faiss-cpu==1.15.1
 fastapi==0.141.1
 filelock==4.0.6
@@ -30,6 +31,7 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 Pygments==2.21.0
 pytest==9.1.1
+python-dateutil==2.9.0.post0
 PyYAML==6.0.3
 regex==2026.9.29
 rich==15.0.0
@@ -40,6 +42,7 @@ scipy==1.18.1
 sentence-transformers==6.1.0
 setuptools==84.0.0
 shellingham==1.5.4
+six==1.17.0
 starlette==1.7.0
 sympy==1.14.0
 threadpoolctl==3.7.0

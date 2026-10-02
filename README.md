@@ -172,8 +172,10 @@ curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호
 ```
 
 - `GET /health` → `{status: loading|ready|failed, model, indexedChunks, error}` + 갱신 관측 필드
-  5종: `generation` (성공적 로드/스왑마다 증가), `reloadError`, `lastUpdateAt`,
-  `lastUpdateResult` (`changed|unchanged|failed|skipped`), `lastUpdateError`. 추가 계약이며 기존
+  7종: `generation` (성공적 로드/스왑마다 증가), `reloadError`, `lastUpdateAt`,
+  `lastUpdateResult` (`changed|unchanged|failed|skipped`), `lastUpdateError`,
+  `lastUpdateTriggeredAt` (가장 최근 틱의 트리거 시각, UTC ISO 8601 · 재시작 시 `null`),
+  `updating` (틱 진행 중 여부 — 긴 틱도 실행 중에 확인 가능). 추가 계약이며 기존
   소비자는 `status`만 읽습니다.
   - `lastUpdateAt`은 **서빙 중인 세대의 인덱스 마지막 기록 시각**입니다: 모든 아티팩트 작성 경로
     (호스트 03/06, 사이드카 틱·부트 리페어)가 수렴하는 `VectorIndex.save`가 `id_map.json`의
@@ -239,15 +241,19 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
 §4.2/§5.2. env 게이트는 전부 비활성/안전 기본값이라 스케줄 없이 `uvicorn`만 띄우는 호스트 개발
 실행은 영향을 받지 않습니다.
 
-| env                                        | 기본값   | 의미                                                                |
-| ------------------------------------------ | -------- | ------------------------------------------------------------------- |
-| `LAWCAST_SEMANTIC_DB_PATH`                 | _(빈값)_ | 갱신 소스 DB 경로. **빈값 = 스케줄·부트 리페어 끔**                 |
-| `LAWCAST_SEMANTIC_UPDATE_INTERVAL_MINUTES` | `60`     | 틱 주기(분). `0`도 끔                                               |
-| `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE`      | off      | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시) |
+| env                                        | 기본값     | 의미                                                                                                                  |
+| ------------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| `LAWCAST_SEMANTIC_DB_PATH`                 | _(빈값)_   | 갱신 소스 DB 경로. **빈값 = 스케줄·부트 리페어 끔**                                                                   |
+| `LAWCAST_SEMANTIC_UPDATE_CRON`             | `0 * * * *` | 갱신 크론 식(분 시 일 월 요일, 로컬시간 — 컨테이너 `TZ`). **빈값 = 스케줄 끔** (구 `UPDATE_INTERVAL_MINUTES` 대체) |
+| `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE`      | off        | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시)                                                   |
 
-- **틱** (사이드카 lifespan 스레드): 주기 ±10% 지터로 DB 읽기 (`mode=ro`) → 증분 plan → 삭제 가드
-  (삭제 >100건 **그리고** >20%면 거부) → 원자적 쓰기 → load-validate-swap. 엔진이 `ready`일 때만
-  돌고 `failed`면 루프를 멈춥니다. 결과는 `/health.lastUpdateResult`로 관측됩니다.
+- **틱** (사이드카 lifespan 스레드 = 인프로세스 크론잡): `UPDATE_CRON` 식이 다음 발생 시각을
+  계산해 그때까지 대기 후 1회 실행 — 주기 ±10% 지터 대신 크론이 정확한 분을 고정합니다. 흐름은
+  DB 읽기 (`mode=ro`) → 증분 plan → 삭제 가드 (삭제 >100건 **그리고** >20%면 거부) → 원자적 쓰기 →
+  load-validate-swap. 엔진이 `ready`일 때만 돌고 `failed`면 루프를 멈춥니다. 잘못된 크론 식은
+  ERROR 로그 후 스케줄만 끕니다 (서빙은 그대로). 틱의 트리거·결과는 각각
+  `update tick triggered` / `update tick finished: <result>` INFO 로그로 사이드카 로그에 남고,
+  결과는 `/health.lastUpdateResult`로 관측됩니다.
 - **`POST /reload`** (내부 네트워크, 무인증) — 디스크 아티팩트를 즉시 스왑: `200` (health 본문,
   generation 증가) / `409` (엔진 미준비, 또는 갱신 진행 중 —
   `an index update is already in progress`) / `503` (새 세대 검증 실패, 이전 세대가 계속 서빙,

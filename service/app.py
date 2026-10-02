@@ -15,9 +15,11 @@ the process is restarted.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -28,6 +30,18 @@ from lawcast_semantic import config  # env-only module: import stays light
 from lawcast_semantic.omp_env import use_single_threaded_omp
 
 use_single_threaded_omp()
+
+# Tick trigger/result logs are INFO records (run_update_cycle); uvicorn's log
+# config leaves the root logger at WARNING with no root handler, which would
+# silently drop them in the real server process (found by driving a live
+# uvicorn instance). The `service` package carries its own level + handler;
+# propagation stays on so pytest caplog and any root config still see them.
+service_logger = logging.getLogger('service')
+service_logger.setLevel(logging.INFO)
+if not service_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
+    service_logger.addHandler(_handler)
 
 # Boot-repair hook contract (design §6.1): (embedder, db_path) -> whether the
 # on-disk artifact set was repaired. The update runner supplies the real one;
@@ -69,6 +83,10 @@ class EngineState:
         self.last_update_at: str | None = None
         self.last_update_result: str | None = None  # 'changed'|'unchanged'|'failed'|'skipped'
         self.last_update_error: str | None = None
+        # Trigger moment of the latest tick: stamped at cycle entry so /health
+        # can show a tick while it runs (record_update clears `updating`).
+        self.last_update_triggered_at: str | None = None
+        self.updating = False
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -83,6 +101,8 @@ class EngineState:
                 'lastUpdateAt': self.last_update_at,
                 'lastUpdateResult': self.last_update_result,
                 'lastUpdateError': self.last_update_error,
+                'lastUpdateTriggeredAt': self.last_update_triggered_at,
+                'updating': self.updating,
             }
 
     def mark_ready(self, searcher: Any, model_name: str, fingerprint: str | None = None) -> None:
@@ -142,6 +162,13 @@ class EngineState:
             self.status = 'failed'
             self.error = error
 
+    def record_tick_started(self) -> None:
+        """Trigger moment of the latest tick: stamps the fired-at time and
+        flips `updating` on; `record_update` brackets it off."""
+        with self._lock:
+            self.last_update_triggered_at = datetime.now(UTC).isoformat()
+            self.updating = True
+
     def record_update(self, result: str, error: str | None = None) -> None:
         """Record one update tick's outcome for §5.2's additive /health fields.
 
@@ -150,6 +177,7 @@ class EngineState:
         failed or unchanged tick never moves it.
         """
         with self._lock:
+            self.updating = False
             self.last_update_result = result
             self.last_update_error = error
 
@@ -250,7 +278,7 @@ async def lifespan(app: FastAPI):
         daemon=True,
         name='semantic-engine-load',
     ).start()
-    if config.DB_PATH and config.UPDATE_INTERVAL_MINUTES > 0:
+    if config.DB_PATH and config.UPDATE_CRON:
         threading.Thread(
             target=update_runner.start_scheduler,
             args=(STATE,),
@@ -271,11 +299,12 @@ def health() -> dict:
         'model': snapshot['model'],
         'indexedChunks': snapshot['indexedChunks'],
         'error': snapshot['error'],
-        # §5.2 additive fields: existing consumers read `status` only.
         'reloadError': snapshot['reloadError'],
         'lastUpdateAt': snapshot['lastUpdateAt'],
         'lastUpdateResult': snapshot['lastUpdateResult'],
         'lastUpdateError': snapshot['lastUpdateError'],
+        'lastUpdateTriggeredAt': snapshot['lastUpdateTriggeredAt'],
+        'updating': snapshot['updating'],
         'generation': snapshot['generation'],
     }
 
