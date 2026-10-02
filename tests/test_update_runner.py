@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime
+from time import time
 from types import SimpleNamespace
 
 import pytest
+from croniter import croniter
 from fastapi.testclient import TestClient
 from test_datasource import make_db
 from test_incremental import StubEmbedder, artifact_paths, make_notice, run_update
@@ -184,6 +187,52 @@ def test_cycle_reports_unchanged_when_in_sync(env):
     assert state.last_update_at is not None
 
 
+def test_cycle_logs_trigger_and_result(env, caplog):
+    """The sidecar log stream is the incremental-work record: every cycle
+    emits a trigger line and a result line, in order."""
+    state = ready_state(env)
+    notice = make_notice(9999, reason='신규 의안의 제안이유입니다. 본안의 필요성을 설명합니다.')
+    execute(env.db_path, 'INSERT INTO notice_archives VALUES (?,?,?,?,?,?)', db_row(notice))
+    with caplog.at_level(logging.INFO, logger='service.update_runner'):
+        runner.run_update_cycle(state, env.embedder)
+        runner.run_update_cycle(state, env.embedder)
+    assert [message for message in caplog.messages if message.startswith('update tick')] == [
+        'update tick triggered',
+        'update tick finished: changed',
+        'update tick triggered',
+        'update tick finished: unchanged',
+    ]
+
+
+def test_cycle_reports_in_flight_state_while_running(env, monkeypatch):
+    """/health can show a tick mid-run: `updating` flips on at the trigger
+    (previous result still visible, stamp advanced) and off at the outcome."""
+    state = ready_state(env)
+    runner.run_update_cycle(state, env.embedder)  # baseline -> 'unchanged'
+    triggered_before = state.last_update_triggered_at
+    entered, release = threading.Event(), threading.Event()
+
+    def gated_tick(_state, _embedder):
+        entered.set()
+        assert release.wait(timeout=5)
+        return 'changed', None
+
+    monkeypatch.setattr(runner, '_tick', gated_tick)
+    worker = threading.Thread(target=runner.run_update_cycle, args=(state, env.embedder))
+    worker.start()
+    assert entered.wait(timeout=5)
+    mid = state.snapshot()
+    assert mid['updating'] is True
+    assert mid['lastUpdateTriggeredAt'] != triggered_before
+    assert mid['lastUpdateResult'] == 'unchanged'  # the previous tick's result still shows
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    end = state.snapshot()
+    assert end['updating'] is False
+    assert end['lastUpdateResult'] == 'changed'
+
+
 def test_cycle_swaps_generation_while_old_keeps_serving(env, monkeypatch):
     """New set is validated while status stays 'ready' and the old searcher serves."""
     state = ready_state(env)
@@ -258,34 +307,44 @@ def test_cycle_refuses_large_delete_and_keeps_serving(env):
 
 
 @pytest.mark.parametrize('scenario, expected', [('lock', 'skipped'), ('no_db', 'failed')])
-def test_cycle_skip_and_failure_outcomes(env, monkeypatch, scenario, expected):
+def test_cycle_skip_and_failure_outcomes(env, monkeypatch, caplog, scenario, expected):
     state = ready_state(env)
-    if scenario == 'lock':
-        handle = open(config.ARTIFACTS_DIR / '.update.lock', 'a')
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
+    with caplog.at_level(logging.INFO, logger='service.update_runner'):
+        if scenario == 'lock':
+            handle = open(config.ARTIFACTS_DIR / '.update.lock', 'a')
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                result = runner.run_update_cycle(state, env.embedder)
+            finally:
+                handle.close()
+        else:
+            monkeypatch.setattr(config, 'DB_PATH', str(env.db_path) + '.missing')
             result = runner.run_update_cycle(state, env.embedder)
-        finally:
-            handle.close()
-    else:
-        monkeypatch.setattr(config, 'DB_PATH', str(env.db_path) + '.missing')
-        result = runner.run_update_cycle(state, env.embedder)
     assert result == expected
     assert state.last_update_result == expected
+    # Trigger and result are logged for every outcome; the in-flight flag clears.
+    assert 'update tick triggered' in caplog.messages
+    assert f'update tick finished: {expected}' in caplog.messages
+    assert state.updating is False
+    assert state.last_update_triggered_at is not None
 
 
 # --- §6.1 wiring: lifespan hands run_boot_repair to load_engine's searcher phase ---
 
 
 @pytest.mark.parametrize(
-    'db_path, interval, scheduler_starts',
-    [('', 60, False), ('/data/lawcast.db', 0, False), ('/data/lawcast.db', 60, True)],
+    'db_path, cron, scheduler_starts',
+    [
+        ('', '0 * * * *', False),
+        ('/data/lawcast.db', '', False),
+        ('/data/lawcast.db', '0 * * * *', True),
+    ],
 )
 def test_lifespan_wires_boot_repair_hook_and_gates_scheduler(
-    monkeypatch, db_path, interval, scheduler_starts
+    monkeypatch, db_path, cron, scheduler_starts
 ):
     """Hook is connected unconditionally (load_engine gates on DB_PATH); the
-    scheduler thread starts only for DB_PATH set AND interval > 0 (§4.2)."""
+    scheduler thread starts only for DB_PATH set AND a non-empty cron (§4.2)."""
     loaded = threading.Event()
     scheduler_ran = threading.Event()
     captured = {}
@@ -298,7 +357,7 @@ def test_lifespan_wires_boot_repair_hook_and_gates_scheduler(
     monkeypatch.setattr(app_module, 'load_engine', spy_loader)
     monkeypatch.setattr(runner, 'start_scheduler', lambda state: scheduler_ran.set())
     monkeypatch.setattr(config, 'DB_PATH', db_path)
-    monkeypatch.setattr(config, 'UPDATE_INTERVAL_MINUTES', interval)
+    monkeypatch.setattr(config, 'UPDATE_CRON', cron)
 
     with TestClient(app_module.app):
         assert loaded.wait(timeout=5)
@@ -309,7 +368,7 @@ def test_lifespan_wires_boot_repair_hook_and_gates_scheduler(
     assert captured['boot_repair'] is runner.run_boot_repair
 
 
-# --- §4.2 scheduler: ready-gated ticks, stopped by failure ---
+# --- §4.2 scheduler: cron-driven, ready-gated ticks, stopped by failure ---
 
 
 def test_scheduler_gates_on_status_and_stops_when_failed(monkeypatch):
@@ -318,7 +377,7 @@ def test_scheduler_gates_on_status_and_stops_when_failed(monkeypatch):
     ticks = []
     monkeypatch.setattr(runner, 'run_update_cycle', lambda state_, embedder: ticks.append(embedder))
     script = [
-        lambda: None,  # still loading -> no tick
+        lambda: None,  # still loading -> no tick at this occurrence
         lambda: state.mark_ready(searcher, 'stub-model'),
         lambda: state.mark_failed('boom'),
     ]
@@ -330,13 +389,29 @@ def test_scheduler_gates_on_status_and_stops_when_failed(monkeypatch):
             raise AssertionError('scheduler kept running after failure')
         script.pop(0)()
 
+    expression = '*/15 * * * *'
+    monkeypatch.setattr(config, 'UPDATE_CRON', expression)
     monkeypatch.setattr(runner, 'sleep', fake_sleep)
+    before = time()
     runner.start_scheduler(state)  # returns once the state is failed
 
     assert ticks == ['live-embedder']  # embedder taken from the served searcher
     assert len(delays) == 3
-    interval = config.UPDATE_INTERVAL_MINUTES * 60
-    assert all(interval * 0.9 <= delay <= interval * 1.1 for delay in delays)  # ±10% jitter
+    # Each sleep waits until the next occurrence of the cron expression
+    # (no jitter: the expression pins the exact minute).
+    expected = croniter(expression, before).get_next(float) - before
+    assert all(0 < delay <= 15 * 60 for delay in delays)
+    assert delays[0] == pytest.approx(expected, abs=5)
+
+
+def test_scheduler_refuses_invalid_cron_and_serves_on(monkeypatch):
+    """A malformed expression fails safe: log + scheduling off, no ticks."""
+    state = app_module.create_state()
+    monkeypatch.setattr(config, 'UPDATE_CRON', 'not a cron expression')
+    monkeypatch.setattr(
+        runner, 'sleep', lambda seconds: pytest.fail('invalid cron must not schedule a tick')
+    )
+    runner.start_scheduler(state)  # returns immediately with a logged ERROR
 
 
 # --- §5.2.1 POST /reload: the scheduler's swap path over HTTP ---
@@ -348,7 +423,7 @@ def reload_client(env, monkeypatch):
     state = ready_state(env)
     monkeypatch.setattr(app_module, 'STATE', state)
     monkeypatch.setattr(app_module, 'load_engine', lambda *_: None)  # state already ready
-    monkeypatch.setattr(config, 'UPDATE_INTERVAL_MINUTES', 0)
+    monkeypatch.setattr(config, 'UPDATE_CRON', '')
     with TestClient(app_module.app) as client:
         yield client, state
 

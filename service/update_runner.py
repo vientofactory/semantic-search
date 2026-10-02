@@ -17,12 +17,13 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
-import random
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from time import sleep
+from time import sleep, time
 from typing import TYPE_CHECKING, Any
+
+from croniter import CroniterError, croniter
 
 from lawcast_semantic import config
 
@@ -164,10 +165,15 @@ def run_reload(state: EngineState, embedder: Any) -> str:
 def run_update_cycle(state: EngineState, embedder: Any) -> str:
     """One scheduled tick (§2) under the artifact lock; records the outcome.
 
+    Trigger and result are both logged (the sidecar's log stream is the
+    incremental-work record) and bracketed on EngineState, so /health shows a
+    tick while it runs and what it did after.
     Returns the §5.2 result vocabulary: 'changed' (artifacts written and
     swapped in, or a stale memory reloaded), 'unchanged', 'failed', or
     'skipped' (a manual run holds the lock).
     """
+    state.record_tick_started()
+    logger.info('update tick triggered')
     try:
         with _update_lock():
             result, error = _tick(state, embedder)
@@ -178,19 +184,34 @@ def run_update_cycle(state: EngineState, embedder: Any) -> str:
         result, error = 'failed', f'{type(exc).__name__}: {exc}'
         logger.warning('update tick failed: %s', error)
     state.record_update(result, error)
+    logger.info('update tick finished: %s', result)
     return result
 
 
 def start_scheduler(state: EngineState) -> None:
-    """Lifespan tick loop (§4.2): interval ±10% jitter, ready-gated.
+    """Lifespan cron job (§4.2): one tick per occurrence of config.UPDATE_CRON.
 
-    Sequential by construction (single-flight): one sleep → check → tick at a
-    time. `loading` waits out the next sleep; `failed` stops the loop — boot
-    repair is the only recovery path for a failed boot.
+    Standard 5-field expression evaluated in local time; the schedule pins the
+    exact fire minute. Sequential by construction (single-flight): one
+    sleep-until-occurrence → check → tick at a time. `loading` waits out to
+    the next occurrence; `failed` stops the loop — boot repair is the only
+    recovery path for a failed boot. An unusable expression fails safe
+    (logged ERROR, scheduling off, serving untouched), matching the §4.2
+    string-config parsing rule (see ALLOW_LARGE_DELETE).
     """
-    interval = config.UPDATE_INTERVAL_MINUTES * 60
     while True:
-        sleep(interval * random.uniform(0.9, 1.1))
+        now = time()
+        try:
+            delay = croniter(config.UPDATE_CRON, now).get_next(float) - now
+        except CroniterError as exc:  # bad syntax, or an occurrence that never comes
+            logger.error(
+                'update scheduler disabled: %r is not a usable cron expression: %s '
+                '(5-field cron expected, e.g. "0 * * * *"; empty disables)',
+                config.UPDATE_CRON,
+                exc,
+            )
+            return
+        sleep(delay)
         snapshot = state.snapshot()
         if snapshot['status'] == 'failed':
             return

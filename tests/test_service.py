@@ -5,8 +5,10 @@ shapes are exercised without the model stack. The `phases` fixture drives
 the REAL `load_engine` with fakes for the lazy model exports (design §6.1).
 """
 
+import logging
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,6 +119,37 @@ def test_health_shape(client):
     assert health['model'] == 'stub-model'
     assert health['indexedChunks'] == 1
     assert health['error'] is None
+    assert health['updating'] is False  # no tick has run yet
+    assert health['lastUpdateTriggeredAt'] is None
+
+
+def test_health_exposes_tick_progress(client):
+    """The tick trigger is queryable over HTTP while it runs (§5.2 additive
+    fields); recording the outcome flips `updating` off."""
+    import service.app as app_module
+
+    app_module.STATE.record_tick_started()
+    health = client.get('/health').json()
+    assert health['updating'] is True
+    assert datetime.fromisoformat(health['lastUpdateTriggeredAt'])  # ISO 8601
+
+    app_module.STATE.record_update('changed')
+    health = client.get('/health').json()
+    assert health['updating'] is False
+    assert health['lastUpdateResult'] == 'changed'
+
+
+def test_tick_info_logs_reach_the_server_process():
+    """run_update_cycle logs trigger/result at INFO; uvicorn's log config
+    leaves the root logger at WARNING with no root handler, so the `service`
+    package must carry its own level + handler or the live server process
+    silently drops them (found by driving a real uvicorn instance)."""
+    import service.app as app_module
+
+    assert app_module.service_logger is logging.getLogger('service')  # applied at import
+    assert app_module.service_logger.level == logging.INFO
+    assert app_module.service_logger.handlers
+    assert logging.getLogger('service.update_runner').isEnabledFor(logging.INFO)
 
 
 def test_last_update_at_reported_on_health_and_search(client):
