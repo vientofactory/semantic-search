@@ -8,6 +8,7 @@ product equal to cosine similarity. Exact search is fine at LawCast scale
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import faiss
@@ -59,6 +60,12 @@ class VectorIndex:
         payload: dict = {'chunk_ids': list(chunk_ids)}
         if meta:
             payload.update(meta)
+        # Single owner of the index-update timestamp: every writer (host
+        # rebuilds via scripts/03, incremental runs via scripts/06, sidecar
+        # ticks and boot repair) funnels through save(), so id_map.json
+        # records when this set was last written. Stamped after merging
+        # caller meta so the value always describes this write.
+        payload['updated_at'] = datetime.now(UTC).isoformat()
         id_map_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
     @classmethod
@@ -66,7 +73,8 @@ class VectorIndex:
         """Load a persisted index and return (index, payload).
 
         payload contains at least 'chunk_ids'; remaining keys are the meta
-        recorded at build time.
+        recorded at build time, including 'updated_at' (UTC ISO 8601 stamp
+        written by :meth:`save` — absent only for pre-stamp legacy sets).
         """
         index = faiss.read_index(str(index_path))
         wrapper = cls(index.d)

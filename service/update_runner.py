@@ -149,8 +149,9 @@ def run_reload(state: EngineState, embedder: Any) -> str:
     artifact lock so a reload can never read a half-written artifact set.
     Returns 'changed' (new generation serving), 'failed' (old generation
     keeps serving; see `reloadError`), or 'skipped' (a tick or a manual run
-    holds the lock). Manual reloads leave the lastUpdate* tick fields
-    untouched.
+    holds the lock). Manual reloads leave the lastUpdateResult/Error tick
+    fields untouched; `lastUpdateAt` follows the adopted generation's
+    artifact stamp (owned by VectorIndex.save).
     """
     try:
         with _update_lock():

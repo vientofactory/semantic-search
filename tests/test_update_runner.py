@@ -12,8 +12,10 @@ preserved on failure, §5.3 fingerprint self-heal), the scheduler gates, and
 from __future__ import annotations
 
 import fcntl
+import json
 import sqlite3
 import threading
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -205,6 +207,9 @@ def test_cycle_swaps_generation_while_old_keeps_serving(env, monkeypatch):
     assert state.searcher is not old
     assert state.reload_error is None
     assert 9999 in {record['notice_num'] for record in state.searcher.chunks_by_id.values()}
+    # The tick wrote new artifacts and the swap adopted their stamp.
+    written = json.loads(env.paths['id_map_path'].read_text(encoding='utf-8'))
+    assert state.last_update_at == written['updated_at']
 
 
 def test_cycle_keeps_previous_generation_on_reload_failure_then_self_heals(env, monkeypatch):
@@ -309,7 +314,7 @@ def test_lifespan_wires_boot_repair_hook_and_gates_scheduler(
 
 def test_scheduler_gates_on_status_and_stops_when_failed(monkeypatch):
     state = app_module.create_state()
-    searcher = SimpleNamespace(chunk_ids=[], embedder='live-embedder')
+    searcher = SimpleNamespace(chunk_ids=[], embedder='live-embedder', index_updated_at=None)
     ticks = []
     monkeypatch.setattr(runner, 'run_update_cycle', lambda state_, embedder: ticks.append(embedder))
     script = [
@@ -397,6 +402,80 @@ def test_reload_requires_ready_engine(monkeypatch, status):
     assert response.status_code == 409
     assert f'status={status}' in response.json()['detail']
     assert state.generation == 0  # nothing was swapped
+
+
+# --- index last-update time: id_map `updated_at` (VectorIndex.save) -> /health ---
+
+
+def test_artifact_write_stamps_updated_at(env):
+    """Every writer (03, 06, tick, boot repair) funnels through
+    VectorIndex.save, the single owner of the id_map `updated_at` stamp."""
+    payload = json.loads(env.paths['id_map_path'].read_text(encoding='utf-8'))
+    stamp = datetime.fromisoformat(payload['updated_at'])  # valid ISO 8601
+    assert stamp.tzinfo is not None  # UTC-aware
+
+
+def test_responses_report_serving_index_updated_at(reload_client, env):
+    """Boot load adopts the stamp; /health and /search expose it for the
+    backend's single-request consumption."""
+    client, state = reload_client
+    stamp = json.loads(env.paths['id_map_path'].read_text(encoding='utf-8'))['updated_at']
+    assert state.last_update_at == stamp
+    for body in (
+        client.get('/health').json(),
+        client.get('/search', params={'query': '의안'}).json(),
+    ):
+        assert body['lastUpdateAt'] == stamp
+
+
+def test_ticks_never_move_last_update_at(env):
+    """Single ownership: tick outcomes (unchanged/failed) record result+error
+    only — the time moves solely when artifacts are rewritten."""
+    state = ready_state(env)
+    before = state.last_update_at
+    assert before is not None  # adopted from the fixture's baseline write
+
+    assert runner.run_update_cycle(state, env.embedder) == 'unchanged'
+    assert state.last_update_at == before
+
+    execute(env.db_path, 'DELETE FROM notice_archives WHERE noticeNum < 1110')  # shrink guard
+    assert runner.run_update_cycle(state, env.embedder) == 'failed'
+    assert state.last_update_result == 'failed'
+    assert state.last_update_at == before
+
+
+def test_reload_adopts_host_written_artifacts_timestamp(reload_client, env):
+    """Host pipeline (01->03 or 06) wrote artifacts -> one POST /reload:
+    the sidecar reports the write time, not the reload time."""
+    client, state = reload_client
+    old_stamp = state.last_update_at
+    notice = make_notice(9999, reason='신규 의안의 제안이유입니다. 본안의 필요성을 설명합니다.')
+    execute(env.db_path, 'INSERT INTO notice_archives VALUES (?,?,?,?,?,?)', db_row(notice))
+    run_update(load_notices_from_db(env.db_path), StubEmbedder(), env.paths)
+    payload = json.loads(env.paths['id_map_path'].read_text(encoding='utf-8'))
+    assert payload['updated_at'] != old_stamp  # fresh write, fresh stamp
+
+    response = client.post('/reload')
+
+    assert response.status_code == 200
+    assert response.json()['lastUpdateAt'] == payload['updated_at'] != old_stamp
+
+
+def test_legacy_id_map_without_stamp_reports_null(reload_client, env):
+    """Pre-stamp artifact sets load fine and report lastUpdateAt=null."""
+    client, _state = reload_client
+    assert client.get('/health').json()['lastUpdateAt'] is not None
+    payload = json.loads(env.paths['id_map_path'].read_text(encoding='utf-8'))
+    payload.pop('updated_at')
+    env.paths['id_map_path'].write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+
+    response = client.post('/reload')
+
+    assert response.status_code == 200
+    assert response.json()['lastUpdateAt'] is None
+    assert client.get('/search', params={'query': '의안'}).json()['lastUpdateAt'] is None
 
 
 def test_reload_duplicate_in_flight_call_conflicts(reload_client, env, monkeypatch):
