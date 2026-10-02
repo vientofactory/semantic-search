@@ -31,11 +31,22 @@ class SearchResult:
 class SemanticSearcher:
     """Query -> embed -> FAISS top-k -> ranked SearchResult list."""
 
-    def __init__(self, embedder, index, chunk_ids: list[str], chunks_by_id: dict) -> None:
+    def __init__(
+        self,
+        embedder,
+        index,
+        chunk_ids: list[str],
+        chunks_by_id: dict,
+        index_updated_at: str | None = None,
+    ) -> None:
         self.embedder = embedder
         self.index = index
         self.chunk_ids = chunk_ids
         self.chunks_by_id = chunks_by_id
+        # id_map `updated_at` stamped by VectorIndex.save (None for legacy
+        # sets built before the stamp existed); the sidecar adopts it as the
+        # "index last updated" time of the generation this searcher serves.
+        self.index_updated_at = index_updated_at
 
     @classmethod
     def load(
@@ -81,7 +92,13 @@ class SemanticSearcher:
                 f'index dimension {index.dimension} does not match embedder '
                 f'dimension {embedder.dimension}; rebuild the index'
             )
-        return cls(embedder, index, meta['chunk_ids'], chunks_by_id)
+        return cls(
+            embedder,
+            index,
+            meta['chunk_ids'],
+            chunks_by_id,
+            index_updated_at=meta.get('updated_at'),
+        )
 
     def search(self, query: str, k: int = 5) -> list[SearchResult]:
         """Process one query and return top-k chunks ranked by similarity.

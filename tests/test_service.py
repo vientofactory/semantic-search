@@ -15,6 +15,9 @@ from fastapi.testclient import TestClient
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+# Serving generation's artifact stamp reported by both /health and /search.
+STUB_STAMP = '2026-10-02T00:00:00+00:00'
+
 
 @pytest.fixture()
 def client(monkeypatch):
@@ -35,7 +38,12 @@ def client(monkeypatch):
 
     def ready_loader(state, boot_repair=None):
         state.mark_ready(
-            SimpleNamespace(search=stub_search, chunk_ids=['2220607-0000']), 'stub-model'
+            SimpleNamespace(
+                search=stub_search,
+                chunk_ids=['2220607-0000'],
+                index_updated_at=STUB_STAMP,
+            ),
+            'stub-model',
         )
 
     monkeypatch.setattr(app_module, 'STATE', app_module.create_state())
@@ -111,6 +119,14 @@ def test_health_shape(client):
     assert health['error'] is None
 
 
+def test_last_update_at_reported_on_health_and_search(client):
+    """Both main responses carry the serving generation's artifact stamp,
+    so the backend gets the time with the search it already requests."""
+    assert client.get('/health').json()['lastUpdateAt'] == STUB_STAMP
+    search = client.get('/search', params={'query': '세입자 보호'}).json()
+    assert search['lastUpdateAt'] == STUB_STAMP
+
+
 @pytest.fixture()
 def phases():
     """Install deterministic stand-ins for lawcast_semantic's lazy exports.
@@ -156,7 +172,7 @@ def phases():
 def test_load_engine_success_marks_ready(phases):
     import service.app as app_module
 
-    loaded = SimpleNamespace(chunk_ids=['stub-0000'], chunks_by_id={})
+    loaded = SimpleNamespace(chunk_ids=['stub-0000'], chunks_by_id={}, index_updated_at=None)
     phases.outcomes.append(loaded)
     state = app_module.create_state()
     app_module.load_engine(state)
@@ -218,7 +234,9 @@ def test_searcher_phase_failure_runs_repair_and_recovers(monkeypatch, phases):
     import service.app as app_module
 
     monkeypatch.setattr(app_module.config, 'DB_PATH', '/data/lawcast.db')
-    loaded = SimpleNamespace(chunk_ids=['stub-0000', 'stub-0001'], chunks_by_id={})
+    loaded = SimpleNamespace(
+        chunk_ids=['stub-0000', 'stub-0001'], chunks_by_id={}, index_updated_at=None
+    )
     phases.outcomes.extend([FileNotFoundError('torn set'), loaded])
     repair_calls = []
 

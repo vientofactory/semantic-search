@@ -156,7 +156,9 @@ python -m venv .venv          # Python 3.13 기준
 LawCast 백엔드(NestJS)는 Python을 직접 임포트할 수 없으므로 이 프로젝트는 FastAPI 사이드카로
 배포되고 백엔드는 HTTP로 호출합니다 (Ollama 연동과 동일한 패턴). 백엔드 측 엔드포인트는
 `GET /api/notices/semantic-search?query=...&k=...`이며 사이드카 미실행·모델 로딩 실패 시 기존
-키워드 검색으로 자동 폴백합니다 (`mode: keyword_fallback`).
+키워드 검색으로 자동 폴백합니다 (`mode: keyword_fallback`). 응답의 `lastUpdateAt`은 사이드카
+`/search`의 인덱스 마지막 기록 시각을 그대로 전달한 값으로(사이드카 응답이 없으면 `null`),
+프론트엔드 의미 검색 UI의 "마지막 업데이트" 줄이 이를 표시합니다.
 
 ```bash
 # 사이드카 실행 (semantic-search/ 디렉토리에서, 포트 8300)
@@ -173,7 +175,17 @@ curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호
   5종: `generation` (성공적 로드/스왑마다 증가), `reloadError`, `lastUpdateAt`,
   `lastUpdateResult` (`changed|unchanged|failed|skipped`), `lastUpdateError`. 추가 계약이며 기존
   소비자는 `status`만 읽습니다.
+  - `lastUpdateAt`은 **서빙 중인 세대의 인덱스 마지막 기록 시각**입니다: 모든 아티팩트 작성 경로
+    (호스트 03/06, 사이드카 틱·부트 리페어)가 수렴하는 `VectorIndex.save`가 `id_map.json`의
+    `updated_at`(UTC ISO 8601)로 스탬프하고, 엔진 로드/스왑 시 그 값을 채택합니다. 따라서
+    재시작 후에도 유지되며 틱 결과(`unchanged`/`failed`)와 무관하게 움직이지 않습니다.
+    스탬프 이전의 레거시 산출물은 `null`을 보고합니다 (첫 기록 시까지).
+  - `lastUpdateResult`/`lastUpdateError`는 **마지막 틱의 결과**이며 재시작 시 `null`입니다.
 - `GET /search?query=&k=` → 청크 랭킹 결과. query 1~500자 (공백만은 400), k 1~200 (기본 5).
+  응답에 `lastUpdateAt`(서빙 세대의 인덱스 마지막 기록 시각, `str|null`)이 실려 있어 백엔드가
+  검색 요청 한 번으로 시각을 함께 받습니다 — `SearchResponse`와 백엔드의
+  `SemanticSidecarSearchResponse`를 필드 단위로 고정하는 크로스 언어 계약 테스트
+  (`backend/src/modules/semantic-search/semantic-search.contract.spec.ts`)가 양쪽을 묶습니다.
   **k의 단위는 청크**입니다: 백엔드는 chunk → 공고 중복 제거 후에도 공고 k개를 채우기 위해 청크를
   과요청하며 k 상한(`MAX_K`)은
   `backend/src/modules/semantic-search/semantic-search.contract.spec.ts`가 양쪽 계약과 함께

@@ -18,7 +18,6 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -64,6 +63,9 @@ class EngineState:
         self.generation = 0
         self.loaded_fingerprint: str | None = None
         self.reload_error: str | None = None
+        # Index-update time of the serving generation: the id_map `updated_at`
+        # stamped by VectorIndex.save, adopted at mark_ready/reload (durable
+        # across restarts; owned by the artifact write, never by tick code).
         self.last_update_at: str | None = None
         self.last_update_result: str | None = None  # 'changed'|'unchanged'|'failed'|'skipped'
         self.last_update_error: str | None = None
@@ -98,6 +100,7 @@ class EngineState:
             self.error = None
             self.generation += 1
             self.loaded_fingerprint = fingerprint
+            self.last_update_at = searcher.index_updated_at
 
     def reload(self, embedder: Any) -> bool:
         """Load-validate-swap a new generation while the old one serves (§5.2).
@@ -129,6 +132,9 @@ class EngineState:
             self.loaded_fingerprint = fingerprint
             self.reload_error = None
             self.generation += 1
+            # Adopt the new generation's artifact stamp; a failed reload
+            # (above) leaves the previous generation's time in place.
+            self.last_update_at = searcher.index_updated_at
         return True
 
     def mark_failed(self, error: str) -> None:
@@ -137,9 +143,13 @@ class EngineState:
             self.error = error
 
     def record_update(self, result: str, error: str | None = None) -> None:
-        """Record one update tick's outcome for §5.2's additive /health fields."""
+        """Record one update tick's outcome for §5.2's additive /health fields.
+
+        Only the tick vocabulary lives here: `lastUpdateAt` is owned by the
+        artifact write (VectorIndex.save) and adopted at load/swap, so a
+        failed or unchanged tick never moves it.
+        """
         with self._lock:
-            self.last_update_at = datetime.now(UTC).isoformat()
             self.last_update_result = result
             self.last_update_error = error
 
@@ -158,6 +168,11 @@ class SearchResponse(BaseModel):
     query: str
     k: int = Field(ge=1, le=MAX_K)
     model: str | None
+    # Index-update time of the serving generation (id_map `updated_at`);
+    # dual-owned with SemanticSidecarSearchResponse in
+    # backend/src/modules/semantic-search/semantic-search.types.ts (pinned
+    # by the contract spec there).
+    lastUpdateAt: str | None
     results: list[SearchHit]
 
 
@@ -314,6 +329,7 @@ def search(
         query=query,
         k=k,
         model=snapshot['model'],
+        lastUpdateAt=snapshot['lastUpdateAt'],
         results=[
             SearchHit(
                 chunkId=result.chunk_id,
