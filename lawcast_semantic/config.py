@@ -1,9 +1,10 @@
 """Configuration for the LawCast semantic-search library.
 
-Single owner of pipeline settings and artifact locations. The library never
-reads configuration from anywhere else, so importing `lawcast_semantic` is
-sufficient for consumers (e.g. the LawCast backend integration) — no root-level
-modules, no environment wiring beyond the LAWCAST_SEMANTIC_* variables below.
+Single owner of pipeline settings and artifact locations. The library reads
+configuration from the process environment (LAWCAST_SEMANTIC_* below) and an
+optional `.env` file in the project root, so importing `lawcast_semantic` is
+sufficient for consumers (e.g. the LawCast backend integration) — no
+root-level modules, no environment wiring beyond those variables.
 
 All paths are resolved relative to the package so every script and consumer
 resolves the same locations from any working directory.
@@ -17,6 +18,57 @@ from pathlib import Path
 # The side project root (parent of this package); data/ and artifacts/ live here.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / 'data'
+
+# Optional `.env` file (see .env.example): loaded once at import, BEFORE any
+# env read below, so every consumer — scripts, the FastAPI sidecar, the Docker
+# image — shares the same file-based defaults. Precedence is standard dotenv:
+# the process environment always wins (compose `environment:` and shell
+# exports override file values), applied via setdefault. Path override:
+# LAWCAST_SEMANTIC_ENV_FILE; an empty value disables file loading entirely
+# (same empty=off convention as DB_PATH/UPDATE_CRON). A missing file is the
+# normal case (CI clone, host without .env) and fails safe silently.
+ENV_FILE_ENV = 'LAWCAST_SEMANTIC_ENV_FILE'
+
+
+def _parse_env_file(text: str) -> dict[str, str]:
+    """Parse KEY=VALUE lines: blanks/# comments, optional `export`, quotes."""
+    values: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition('=')
+        if not separator:
+            continue
+        key = key.strip()
+        value = value.strip()
+        # Strip one layer of matching quotes; unquoted values keep inner `#`
+        # (cron expressions and paths may legally contain it).
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
+
+
+def load_env_file() -> None:
+    """Load the optional .env file into os.environ without overriding it."""
+    override = os.environ.get(ENV_FILE_ENV)
+    if override is not None and not override.strip():
+        return  # empty LAWCAST_SEMANTIC_ENV_FILE disables file loading
+    path = Path(override).expanduser() if override else PROJECT_ROOT / '.env'
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return  # absent file is the default host/CI case
+    for key, value in _parse_env_file(text).items():
+        os.environ.setdefault(key, value)
+
+
+load_env_file()
+
 # Override with LAWCAST_SEMANTIC_ARTIFACTS_DIR to serve artifacts from another
 # location (e.g. a mounted volume in the Docker sidecar) without moving the
 # code layout. Empty value falls back to the in-tree default.

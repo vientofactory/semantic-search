@@ -247,6 +247,11 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
 | `LAWCAST_SEMANTIC_UPDATE_CRON`             | `0 * * * *` | 갱신 크론 식(분 시 일 월 요일, 로컬시간 — 컨테이너 `TZ`). **빈값 = 스케줄 끔** (구 `UPDATE_INTERVAL_MINUTES` 대체) |
 | `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE`      | off        | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시)                                                   |
 
+- **`.env` 파일**: `lawcast_semantic/config.py`가 임포트 시 프로젝트 루트의 `.env`를 읽습니다
+  (`LAWCAST_SEMANTIC_ENV_FILE`로 경로 지정, **빈값 = 파일 읽기 끔**). 프로세스 환경(compose
+  `environment:`, 셸 export)이 파일보다 항상 우선하며, docker-compose는 `env_file:`로
+  컨테이너에 런타임 주입합니다 (파일 부재 시에도 `required:false`로 통과, 이미지에는 미포함).
+  템플릿은 `semantic-search/.env.example` 참조.
 - **틱** (사이드카 lifespan 스레드 = 인프로세스 크론잡): `UPDATE_CRON` 식이 다음 발생 시각을
   계산해 그때까지 대기 후 1회 실행 — 주기 ±10% 지터 대신 크론이 정확한 분을 고정합니다. 흐름은
   DB 읽기 (`mode=ro`) → 증분 plan → 삭제 가드 (삭제 >100건 **그리고** >20%면 거부) → 원자적 쓰기 →
