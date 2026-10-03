@@ -13,12 +13,17 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OVERRIDE_ENV = 'LAWCAST_SEMANTIC_ARTIFACTS_DIR'
-# Env vars the tests must control explicitly so defaults stay deterministic.
+ENV_FILE_ENV = 'LAWCAST_SEMANTIC_ENV_FILE'
+# Env vars the tests must control explicitly so defaults stay deterministic
+# (a developer's shell exports and any project-root .env must not leak in).
 STRIPPED_ENV = {
     OVERRIDE_ENV,
     'LAWCAST_SEMANTIC_DB_PATH',
     'LAWCAST_SEMANTIC_UPDATE_CRON',
     'LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE',
+    'LAWCAST_SEMANTIC_DEVICE',
+    'LAWCAST_SEMANTIC_BATCH',
+    'LAWCAST_SEMANTIC_MODEL',
 }
 
 
@@ -27,6 +32,9 @@ def run_config(*names: str, env_overrides: dict | None = None) -> list[str]:
     code = 'import lawcast_semantic.config as c\n' + ''.join(f'print(c.{name})\n' for name in names)
     # Strip any inherited override so the default case is deterministic.
     env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV}
+    # Disable .env loading unless a test opts in, so a developer's
+    # project-root .env can never shift defaults in the subprocess.
+    env[ENV_FILE_ENV] = ''
     env.update(env_overrides or {})
     result = subprocess.run(
         [sys.executable, '-c', code],
@@ -132,3 +140,53 @@ def test_allow_large_delete_fails_safe_on_anything_else():
             env_overrides={'LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE': value},
         )
         assert line == 'False', value
+
+
+def test_env_file_supplies_values_when_process_env_is_silent(tmp_path: Path):
+    """A .env file is read at import: comments, export, quotes, cron spaces."""
+    env_file = tmp_path / '.env'
+    env_file.write_text(
+        '# operator overrides\n'
+        'export LAWCAST_SEMANTIC_DEVICE=mps\n'
+        'LAWCAST_SEMANTIC_BATCH=8\n'
+        "LAWCAST_SEMANTIC_UPDATE_CRON='17 * * * *'\n"
+        'LAWCAST_SEMANTIC_MODEL="jhgan/ko-sbert-sts"\n',
+        encoding='utf-8',
+    )
+    lines = run_config(
+        'DEVICE',
+        'EMBED_BATCH_SIZE',
+        'UPDATE_CRON',
+        'MODEL_NAME',
+        env_overrides={ENV_FILE_ENV: str(env_file)},
+    )
+    assert lines == ['mps', '8', '17 * * * *', 'jhgan/ko-sbert-sts']
+
+
+def test_env_file_never_overrides_the_process_environment(tmp_path: Path):
+    """Precedence: compose `environment:` / shell exports beat the file."""
+    env_file = tmp_path / '.env'
+    env_file.write_text('LAWCAST_SEMANTIC_DEVICE=mps\n', encoding='utf-8')
+    lines = run_config(
+        'DEVICE',
+        env_overrides={ENV_FILE_ENV: str(env_file), 'LAWCAST_SEMANTIC_DEVICE': 'cpu'},
+    )
+    assert lines == ['cpu']
+
+
+def test_missing_env_file_fails_safe(tmp_path: Path):
+    """A configured-but-absent path keeps the code defaults (CI clone case)."""
+    lines = run_config(
+        'DEVICE',
+        'UPDATE_CRON',
+        env_overrides={ENV_FILE_ENV: str(tmp_path / 'nope.env')},
+    )
+    assert lines == ['cpu', '0 * * * *']
+
+
+def test_empty_env_file_path_disables_loading(tmp_path: Path):
+    """Empty LAWCAST_SEMANTIC_ENV_FILE = off, even when a file exists."""
+    env_file = tmp_path / '.env'
+    env_file.write_text('LAWCAST_SEMANTIC_DEVICE=mps\n', encoding='utf-8')
+    lines = run_config('DEVICE', env_overrides={ENV_FILE_ENV: ''})
+    assert lines == ['cpu'], f'file was read despite being disabled: {env_file.exists()}'
