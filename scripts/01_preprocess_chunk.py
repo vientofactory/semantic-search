@@ -6,7 +6,7 @@ into section-aware chunks, and writes chunks JSONL for stage 2.
 
 Usage:
     python scripts/01_preprocess_chunk.py
-        [--input data/sample_notices.jsonl | --db ../backend/lawcast.db]
+        [--input data/sample_notices.jsonl | --db lawcast.db]
         [--out artifacts/chunks.jsonl]
 """
 

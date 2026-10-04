@@ -1,19 +1,17 @@
 # LawCast Semantic Search
 
-LawCast의 법률안(입법예고) 데이터를 대상으로 의미(시맨틱) 검색 파이프라인을 구축한 독립 사이드
-프로젝트입니다. `backend/`, `frontend/`와 분리된 디렉토리이며 LawCast 코드베이스를 수정하지
-않습니다.
+LawCast의 입법예고 데이터를 기반으로 구축하는 의미 검색 엔진 프로젝트입니다.
 
 기존 검색은 SQLite FTS5 키워드 전문검색뿐이라 "세입자 보호" 같은 질의가 "임차인"이 들어간 법률안을
 찾지 못합니다. 이 프로젝트는 그 위에 올릴 의미 검색 레이어입니다. 핵심 텍스트 소스는
 `proposalReason`(제안이유 및 주요내용)으로, `제안이유` / `주요내용` 헤더와 `가. 나. 다.` 항목이
 개행으로 구분된 구조화된 한국어 법률 텍스트입니다.
 
-각 단계는 독립 실행 가능한 스크립트입니다. 앞 단계의 산출물(artifact)을 다음 단계가 읽습니다.
+각 단계는 독립 실행 가능한 스크립트입니다. 앞 단계의 아티팩트를 다음 단계가 읽습니다.
 
 ```mermaid
 flowchart LR
-    db[("backend/lawcast.db")] -->|1. 전처리 + 청킹| chunks["chunks.jsonl"]
+    db[("lawcast.db")] -->|1. 전처리 + 청킹| chunks["chunks.jsonl"]
     db -.->|"0. 샘플 추출(평가용)"| sample["sample_notices.jsonl"]
     chunks -->|2. 토크나이징 + 임베딩| emb["embeddings.npz"]
     emb -->|3. FAISS 인덱싱| idx["faiss.index + id_map.json"]
@@ -22,22 +20,18 @@ flowchart LR
     search --> result["top-k 랭킹"]
 ```
 
-(2)와 (4)는 동일 모델로 임베딩합니다. 청크 수·벡터·인덱스 용량 같은 산출물 규모는 코퍼스와 모델에
-따라 달라집니다. 고정 수치가 아니라 산출 시점에 `/health.indexedChunks`나 산출물 파일에서 직접
+(2)와 (4)는 동일 모델로 임베딩합니다. 청크 수·벡터·인덱스 용량 같은 아티팩트 규모는 코퍼스와 모델에
+따라 달라집니다. 고정 수치가 아니라 산출 시점에 `/health.indexedChunks`나 아티팩트 파일에서 직접
 확인하세요.
 
-## 임베딩 모델 (`nlpai-lab/KURE-v1`)
+## 임베딩 모델 ([nlpai-lab/KURE-v1](https://huggingface.co/nlpai-lab/KURE-v1))
 
-- **특성**: bge-m3 기반 한국어-영어 검색 특화 모델, 1,024차원, 최대 8,192 토큰, MIT 라이선스.
-  sentence-transformers 네이티브 포맷으로 로드하며 커스텀 코드가 필요 없습니다.
 - **채택 근거**: 리트리벌(질의 → 문서 순위) 목적으로 학습되어 의미 검색과 목적이 일치하고
   홀드아웃 A/B에서 구어체·동의어 질의가 개선되며 제목/본문 평가셋 전 지표가 무회귀한 결과로
   채택했습니다. 긴 토큰 윈도우 덕분에 청크 절단도 발생하지 않습니다.
 - **교체**: `LAWCAST_SEMANTIC_MODEL`로 다른 모델과 A/B할 수 있습니다 (예: `jhgan/ko-sbert-sts`,
   768차원 / 128 토큰). 모델을 바꾸면 인덱스도 함께 바뀌므로 1 → 3 전체 재구축이 필요하고
   증분 갱신은 모델 교체를 명시적 오류로 거부합니다.
-- 모델 선정 A/B 상세 수치와 기각한 후보 기록은 git 이력 및
-  `agent_memories/06-semantic-search-side-project/plan.md`를 참조하세요.
 
 ## 디렉토리 구조
 
@@ -67,13 +61,13 @@ semantic-search/
 │   ├── sample_notices.jsonl      # 평가 코퍼스 스냅샷
 │   ├── eval_holdout_queries.jsonl # 홀드아웃 평가셋 (실사용자 스타일 질의)
 │   └── eval_queries.jsonl        # 제목/본문 평가셋 (제목 컨텍스트 임베딩 회귀 검출)
-├── artifacts/                    # 단계별 산출물 (gitignore, 코퍼스 규모에 비례)
+├── artifacts/                    # 단계별 아티팩트 (gitignore, 코퍼스 규모에 비례)
 │   ├── chunks.jsonl              #     stage 1 출력
 │   ├── embeddings.npz            #     stage 2 출력
 │   ├── faiss.index               #     stage 3 출력
 │   ├── id_map.json               #     행 -> chunk_id 매핑
 │   ├── .update.lock              #     증분 갱신 flock 락
-│   └── backup-*/                 #     이전 세대 산출물 백업 (로컬 전용)
+│   └── backup-*/                 #     이전 세대 아티팩트 백업 (로컬 전용)
 ├── service/
 │   ├── app.py                    # FastAPI 사이드카 (/health, /search, /reload)
 │   └── update_runner.py          #     정기 갱신 틱 · 부트 리페어 실행기
@@ -103,19 +97,19 @@ python -m venv .venv          # Python 3.13 기준
 
 임베딩 모델 가중치는 최초 실행 시 HuggingFace에서 자동 다운로드됩니다.
 
-## 파이프라인 실행 (순서대로)
+## 파이프라인 실행
 
 각 스크립트는 어느 디렉토리에서든 실행 가능하며 (경로가 `lawcast_semantic/config.py` 기준 절대
 해석), 이전 단계의 artifact를 기본 입력으로 읽습니다.
 
 ```bash
-# 0. LawCast SQLite DB에서 평가 코퍼스 추출 (읽기 전용, 기본 소스: ../backend/lawcast.db)
+# 0. LawCast SQLite DB에서 평가 코퍼스 추출 (읽기 전용, 기본 소스: lawcast.db)
 .venv/bin/python scripts/extract_sample_data.py --per-bucket 100   # 길이 구간별 건수
 
 # 1. 전처리 + 청킹  -> artifacts/chunks.jsonl (JSONL 스냅샷 기준)
 .venv/bin/python scripts/01_preprocess_chunk.py
 #    또는 DB에서 직접 학습: notice_archives.proposalReason 전체를 청킹
-.venv/bin/python scripts/01_preprocess_chunk.py --db ../backend/lawcast.db
+.venv/bin/python scripts/01_preprocess_chunk.py --db lawcast.db
 
 # 2. 토크나이징 + 임베딩 추출 -> artifacts/embeddings.npz
 .venv/bin/python scripts/02_extract_embeddings.py
@@ -128,13 +122,13 @@ python -m venv .venv          # Python 3.13 기준
 .venv/bin/python scripts/04_search.py --query "..." --query "..." --json  # 다중 질의/JSON 출력
 
 # 5. 증분 갱신: 신규/수정/삭제 공고만 반영 (전체 재구축 없이)
-.venv/bin/python scripts/06_incremental_update.py --db ../backend/lawcast.db
-.venv/bin/python scripts/06_incremental_update.py --db ../backend/lawcast.db --plan-only  # 변경 계획만 JSON으로
+.venv/bin/python scripts/06_incremental_update.py --db lawcast.db
+.venv/bin/python scripts/06_incremental_update.py --db lawcast.db --plan-only  # 변경 계획만 JSON으로
 ```
 
 ## 아티팩트 교체 규칙
 
-`artifacts/`는 항상 **마지막에 완주한 파이프라인(0/1 → 3)의 산출물 한 세트**를 나타냅니다.
+`artifacts/`는 항상 **마지막에 완주한 파이프라인(0/1 → 3)의 아티팩트 한 세트**를 나타냅니다.
 
 - **일관성 원칙**: 파이프라인을 다시 돌리면 chunks → embeddings → faiss/id_map이 한 세트로
   재생성됩니다. `embeddings.npz`가 보관하는 `chunks_fingerprint`(청크 id + 임베딩 입력의 해시)와
@@ -142,9 +136,8 @@ python -m venv .venv          # Python 3.13 기준
   옛 임베딩)를 ValueError로 거부합니다. **파일을 손으로 부분 교체하는 것은 항상 금지**이며
   일관된 세트를 만드는 방법은 두 가지입니다: 1 → 3 전체 재구축, 또는 증분 갱신.
 - **증분 갱신(운영 권장)**: 신규·수정·삭제 공고만 반영하려면 `scripts/06_incremental_update.py`를
-  사용합니다. 산출물은 전체 재구축과 동일하며 갱신 중 크래시는 재실행만으로 복구됩니다. 설계
-  결정과 검증 기록의 단일 소유처는 `agent_memories/07-incremental-indexing/plan.md`입니다.
-- **백업**: 이전 세대 산출물은 `artifacts/backup-*/`에 둡니다 (로컬 전용, gitignore). 이전 세대로
+  사용합니다. 아티팩트은 전체 재구축과 동일하며 갱신 중 크래시는 재실행만으로 복구됩니다.
+- **백업**: 이전 세대 아티팩트은 `artifacts/backup-*/`에 둡니다 (로컬 전용, gitignore). 이전 세대로
   되돌리려면 백업 파일을 `artifacts/` 최상위로 복사하거나, 스크립트의 `--chunks`, `--embeddings`,
   `--id-map` 인자로 백업 파일을 직접 지정하세요.
 - **평가셋 주의**: `data/eval_*_queries.jsonl`의 정답 공고는 특정 코퍼스 기준으로 라벨링되어
@@ -154,11 +147,7 @@ python -m venv .venv          # Python 3.13 기준
 ## 백엔드 연동: HTTP 사이드카 (`service/app.py`)
 
 LawCast 백엔드(NestJS)는 Python을 직접 임포트할 수 없으므로 이 프로젝트는 FastAPI 사이드카로
-배포되고 백엔드는 HTTP로 호출합니다 (Ollama 연동과 동일한 패턴). 백엔드 측 엔드포인트는
-`GET /api/notices/semantic-search?query=...&k=...`이며 사이드카 미실행·모델 로딩 실패 시 기존
-키워드 검색으로 자동 폴백합니다 (`mode: keyword_fallback`). 응답의 `lastUpdateAt`은 사이드카
-`/search`의 인덱스 마지막 기록 시각을 그대로 전달한 값으로(사이드카 응답이 없으면 `null`),
-프론트엔드 의미 검색 UI의 "마지막 업데이트" 줄이 이를 표시합니다.
+배포되고 백엔드는 HTTP로 호출합니다.
 
 ```bash
 # 사이드카 실행 (semantic-search/ 디렉토리에서, 포트 8300)
@@ -181,7 +170,7 @@ curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호
     (호스트 03/06, 사이드카 틱·부트 리페어)가 수렴하는 `VectorIndex.save`가 `id_map.json`의
     `updated_at`(UTC ISO 8601)로 스탬프하고, 엔진 로드/스왑 시 그 값을 채택합니다. 따라서
     재시작 후에도 유지되며 틱 결과(`unchanged`/`failed`)와 무관하게 움직이지 않습니다.
-    스탬프 이전의 레거시 산출물은 `null`을 보고합니다 (첫 기록 시까지).
+    스탬프 이전의 레거시 아티팩트은 `null`을 보고합니다 (첫 기록 시까지).
   - `lastUpdateResult`/`lastUpdateError`는 **마지막 틱의 결과**이며 재시작 시 `null`입니다.
 - `GET /search?query=&k=` → 청크 랭킹 결과. query 1~500자 (공백만은 400), k 1~200 (기본 5).
   응답에 `lastUpdateAt`(서빙 세대의 인덱스 마지막 기록 시각, `str|null`)이 실려 있어 백엔드가
@@ -198,7 +187,7 @@ curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호
   백엔드 컨테이너는 `SEMANTIC_SEARCH_API_URL=http://semantic-search:8300`로 오버라이드되어
   사이드카 컨테이너에 도달합니다.
 
-## 프로덕션 배포 (Docker)
+## Docker 배포
 
 루트 `docker-compose.yml`의 `semantic-search` 서비스로 배포됩니다 (이미지 빌드는 `Dockerfile`,
 빼는 대상은 `.dockerignore`가 단일 소유):
@@ -208,44 +197,28 @@ docker compose up -d --build semantic-search   # 루트에서
 curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버깅용)
 ```
 
-- **이미지는 코드만 담습니다**: 인덱스 산출물 (gitignore)은 호스트의
+- **이미지는 코드만 담습니다**: 인덱스 아티팩트 (gitignore)은 호스트의
   `semantic-search/artifacts/`를 `/app/artifacts`에 바인드 마운트하고 모델 가중치는
-  `lawcast_semantic_hf_cache` 볼륨 (`HF_HOME=/cache/huggingface`)에 1회 다운로드됩니다. 산출물
+  `lawcast_semantic_hf_cache` 볼륨 (`HF_HOME=/cache/huggingface`)에 1회 다운로드됩니다. 아티팩트
   위치는 `LAWCAST_SEMANTIC_ARTIFACTS_DIR`로 지정할 수 있습니다.
 - **인덱스 준비는 배포 전제 조건입니다**: 파이프라인 (1 → 3) 또는 증분 갱신으로 `artifacts/`
-  세트를 만든 뒤 컨테이너를 기동하세요. 빈 산출물이면 `/health`가 `failed`를 보고합니다.
+  세트를 만든 뒤 컨테이너를 기동하세요. 빈 아티팩트이면 `/health`가 `failed`를 보고합니다.
 - **헬스체크**: compose가 소유하며 엔진 로드 실패 (`status: failed`)에서만 unhealthy입니다. 최초
   기동의 모델 다운로드/로딩 (`loading`)은 healthy로 봅니다 (백엔드가 키워드로 폴백).
 - **동작 계약**: 콜드 캐시 최초 기동은 모델 다운로드가 끝날 때까지 `loading`이며 그 전에는
   `ready`가 아닙니다 (캐시 볼륨이 있으면 재배포는 로딩만). 로드 실패는 `failed`로 유지되고 자동
-  재시도가 없으므로 원인 수정 후 산출물을 재생성해야 합니다 (같은 환경에서는 재시작만으로는
+  재시도가 없으므로 원인 수정 후 아티팩트을 재생성해야 합니다 (같은 환경에서는 재시작만으로는
   복구되지 않습니다).
-- **torch는 CPU 휠로 설치합니다** (`download.pytorch.org/whl/cpu`): PyPI 기본 linux 휠은 사용하지
-  않는 CUDA 의존성 수 GB를 끌어옵니다.
+- **torch는 CPU 휠로 설치합니다** (`download.pytorch.org/whl/cpu`): PyPI 기본 linux 휠은 사용하지 않는 CUDA 의존성 수 GB를 끌어옵니다.
 - **증분 갱신 반영**: `scripts/06_incremental_update.py`가 아티팩트를 갱신하면 사이드카가 자동
   반영합니다 — 스케줄 틱이 디스크 지문과 서빙 세대를 비교해 load-validate-swap하고 (지문 일치 시
-  재로드 생략), 수동으로는 `POST /reload`로 즉시 스왑합니다. 아티팩트를 직접 쓰는 호스트 작업은
-  아래 flock 규칙을 지켜야 합니다.
+  재로드 생략), 수동으로는 `POST /reload`로 즉시 스왑합니다. 아티팩트를 직접 쓰는 호스트 작업은 아래 flock 규칙을 지켜야 합니다.
 
-**검증 시 주의**: 호스트에 이미 8300 리스너 (예: 로컬 개발용 `uvicorn service.app:app`)가 있으면
-게시 포트 트래픽이 그 프로세스로 섀도잉되어 컨테이너가 아닌 다른 엔진을 측정하게 됩니다.
-컨테이너 내부 (`/health`) 또는 서비스 DNS (`http://semantic-search:8300`)로 확인하세요 (백엔드는
-서비스 DNS를 사용하므로 영향 없음).
-
-배포 실측 기록과 백엔드 end-to-end 검증 기록은
-`agent_memories/08-semantic-search-production-deploy/`를 참조하세요.
-
-### 정기 갱신 스케줄 · `POST /reload` · flock 규칙
-
-설계 출처: `agent_memories/08-semantic-search-production-deploy/incremental-update-pipeline-design.md`
-§4.2/§5.2. env 게이트는 전부 비활성/안전 기본값이라 스케줄 없이 `uvicorn`만 띄우는 호스트 개발
-실행은 영향을 받지 않습니다.
-
-| env                                        | 기본값     | 의미                                                                                                                  |
-| ------------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------- |
-| `LAWCAST_SEMANTIC_DB_PATH`                 | _(빈값)_   | 갱신 소스 DB 경로. **빈값 = 스케줄·부트 리페어 끔**                                                                   |
-| `LAWCAST_SEMANTIC_UPDATE_CRON`             | `0 * * * *` | 갱신 크론 식(분 시 일 월 요일, 로컬시간 — 컨테이너 `TZ`). **빈값 = 스케줄 끔** (구 `UPDATE_INTERVAL_MINUTES` 대체) |
-| `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE`      | off        | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시)                                                   |
+| env                                   | 기본값      | 의미                                                                                                               |
+| ------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------ |
+| `LAWCAST_SEMANTIC_DB_PATH`            | _(빈값)_    | 갱신 소스 DB 경로. **빈값 = 스케줄·부트 리페어 끔**                                                                |
+| `LAWCAST_SEMANTIC_UPDATE_CRON`        | `0 * * * *` | 갱신 크론 식(분 시 일 월 요일, 로컬시간 — 컨테이너 `TZ`). **빈값 = 스케줄 끔** (구 `UPDATE_INTERVAL_MINUTES` 대체) |
+| `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE` | off         | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시)                                                |
 
 - **`.env` 파일**: `lawcast_semantic/config.py`가 임포트 시 프로젝트 루트의 `.env`를 읽습니다
   (`LAWCAST_SEMANTIC_ENV_FILE`로 경로 지정, **빈값 = 파일 읽기 끔**). 프로세스 환경(compose
@@ -279,7 +252,7 @@ from lawcast_semantic import KoreanEmbedder, SemanticSearcher  # 공개 API (지
 
 embedder = KoreanEmbedder()  # 기본값: config.MODEL_NAME / config.DEVICE
 searcher = SemanticSearcher.load(embedder)  # 기본 경로: config의 artifacts/*
-results = searcher.search('세입자 보호', k=5)  # 산출물 지문/모델 불일치 시 ValueError
+results = searcher.search('세입자 보호', k=5)  # 아티팩트 지문/모델 불일치 시 ValueError
 ```
 
 - **책임 분리**: `datasource`(데이터) / `preprocess`·`chunking`(전처리·청킹) / `embedding`(엔진) /
@@ -328,7 +301,7 @@ results = searcher.search('세입자 보호', k=5)  # 산출물 지문/모델 �
   (`compose_embedding_text`가 단일 소스이며 청크 지문도 동일 입력 기준으로 해싱)
 - **토크나이징 단계**: 이 결합 입력을 모델 토크나이저로 변환해 토큰 수/절단 여부를 리포트하고
   모델 윈도우를 넘는 청크를 가드레일로 출력합니다. `truncated_count`가 0이 아니면 청크 상한이나
-  모델을 재조정하세요.
+  모델을 재조정하세요.x
 - **임베딩 추출**: float32, L2 정규화 (코사인 유사도용). 청크 상한 200자는 이전 모델의 짧은 토큰
   윈도우용 캘리브레이션이지만 청크 크기 정책으로 그대로 유지합니다 (비교 가능성).
 
@@ -345,15 +318,6 @@ results = searcher.search('세입자 보호', k=5)  # 산출물 지문/모델 �
   측에서 제공합니다.
 - FAISS top-k 탐색 후 코사인 유사도 점수와 청크 메타데이터 (공고 번호, 제목, 섹션, 원문 발췌)를
   랭킹 출력합니다.
-
-## 데이터 원천
-
-기본 소스는 백엔드 개발 DB인 `backend/lawcast.db` (읽기 전용)이며 루트의 프로덕션 스냅샷
-`lawcast_prod.db`도 `--db ../lawcast_prod.db`로 함께 쓸 수 있습니다. 두 DB는 스키마와 행 수가
-다를 수 있으므로 학습 소스를 바꿀 때는 `notice_archives` 상태를 먼저 확인하세요.
-
-샘플 선택은 길이 구간별 최신순이므로 (`--per-bucket N`으로 구간당 건수 조절), 데이터가 갱신되면
-샘플 대상 공고도 바뀝니다.
 
 ## 실행 결과 예시
 
@@ -402,10 +366,6 @@ query: 버스회사를 인수한 사모펀드가 차고지를 팔면
 .venv/bin/python scripts/05_evaluate.py                                        # 제목/본문 세트
 ```
 
-모델 A/B 결과, 미스 원인 분석, 채택하지 않은 접근 (BM25 + RRF 하이브리드)의 회귀 기록은 git 이력과
-`agent_memories/06-semantic-search-side-project/plan.md`, 최신 측정 현황은
-`agent_memories/08-semantic-search-production-deploy/production-readiness-status.md`를 참조하세요.
-
 ## 린트 / 포맷
 
 ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규칙, 100자, single quote).
@@ -418,7 +378,7 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
 ## 테스트
 
 ```bash
-.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pytest tests/ -q    # 전체 suite — 현재 134 passed, ruff clean
 ```
 
 - `test_preprocess.py` — 정규화 (개행 보존, NFC, HTML 제거), 섹션 감지
@@ -426,24 +386,51 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
   스냅샷 라운드트립
 - `test_chunking.py` — 청크 크기 상한 (제목 컨텍스트 예산 포함), 오버랩, 섹션 전파, chunk_id 유일성,
   중복 notice_num 거부, 폴백, 제목 컨텍스트 결합 (`compose_embedding_text`)
-- `test_indexing_search.py` — FAISS 저장/로드 라운드트립, 랭킹 결정성 (동점 tie-break), 산출물
+- `test_indexing_search.py` — FAISS 저장/로드 라운드트립, 랭킹 결정성 (동점 tie-break), 아티팩트
   지문·모델 불일치 거부 (스텁 임베더로 모델 다운로드 없이 실행)
 - `test_evaluation.py` — recall@k/MRR 계산, 공고 중복 제거 순위, 평가셋 무결성
 - `test_entrypoints.py` — 실제 스크립트 실행: 빈 입력·빈 공고·DB 직접 학습 (`--db`)·잘못된 `--k`·
-  빈 평가셋·경량 임포트 시 모델 스택 미로딩·산출물 불일치의 깔끔한 error 표기 (트레이스백 없음)
+  빈 평가셋·경량 임포트 시 모델 스택 미로딩·아티팩트 불일치의 깔끔한 error 표기 (트레이스백 없음)
 - `test_incremental.py` — 증분 갱신 (행별 출처 다이제스트, 재사용·크래시 복구)
 - `test_config.py` / `test_update_runner.py` / `test_service.py` — env 게이트, 스케줄·부트
   리페어·스왑/롤백 계약, `POST /reload` 경계와 로딩 단계 분리
+- `test_concurrency.py` — HTTP 사이드카 동시성 5종 (서버 라이프사이클·동시 발사 하니스는
+  `tests/conftest.py`에 공유. 상세는 아래 "동시성 테스트" 참조)xw
 - `test_version.py` — `pyproject.toml` 버전 형식(semver)·필수 메타데이터·메타데이터 전용 계약
 
-## 버전 · 릴리스
+### 동시성 테스트 (`test_concurrency.py`)
 
-- **버전의 단일 소유처는 `pyproject.toml`의 `[project].version`**입니다 (`backend`·`frontend`의
-  `package.json` 상응). 이 파일은 메타데이터 전용이며 의존성은 `requirements.txt` /
-  `requirements.lock`이, 린트 설정은 `ruff.toml`이 계속 소유합니다.
-- **태그 규약은 `semantic-search-vX.Y.Z`** (기존 `backend-v…`, `frontend-v…`와 동일). PR 병합 전에
-  버전을 올리고, `main`의 squash 커밋에 태그를 붙인 뒤 같은 이름으로 GitHub Release를 만듭니다.
-  전체 절차는 저장소 루트 `AGENTS.md`의 Deployment & Release Workflow가 단일 소유처입니다.
+사이드카(`service/app.py`)의 동기 핸들러가 요청 뒤에 블로킹 없이 겹쳐 실행됨을 증명하는 5종
+테스트입니다. 인프로세스 uvicorn(스럽) / 실엔진 서브프로세스(프로덕션 Dockerfile CMD) 라이프사이클,
+준비 대기, 동시 발사 하니스는 `tests/conftest.py`에 있습니다.
+
+```bash
+.venv/bin/python -m pytest tests/test_concurrency.py -q      # 동시성 5종만
+.venv/bin/python -m pytest tests/test_concurrency.py -q -s   # 측정 프린트 (타이밍·마진·GIL 분리)
+.venv/bin/python -m pytest tests/test_concurrency.py -q -k real   # 실엔진 1종만 (~10초)
+
+# CI·클린 클론 경로 확인: 아티팩트/모델 캐시 없음 → 실엔진 테스트 자동 skip
+LAWCAST_SEMANTIC_ARTIFACTS_DIR=$(mktemp -d) .venv/bin/python -m pytest tests/test_concurrency.py -q
+#   → 4 passed, 1 skipped
+```
+
+| 테스트                                             | 증명하는 것                                                          | 핵심 실측                                             |
+| -------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------- |
+| `concurrent_searches_overlap_and_all_succeed`      | 8개 동시 `/search`가 큐 대기 없이 겹침                               | `max_in_flight=8`, wall 0.42s vs 직렬화 예산 3.20s    |
+| `health_responds_fast_while_slow_search_runs`      | 상태 락이 검색 실행 동안 유지되지 않음 (스냅샷 패턴)                 | 1.5s 검색 진행 중 `/health` 0.6–1.8ms                 |
+| `loading_engine_fails_fast_under_concurrent_load`  | 로딩 중 `/search`는 대기 없이 즉시 503, 로드 후 재시작 없이 200 회복 | 6×503 ~10ms                                           |
+| `searches_keep_succeeding_across_generation_swaps` | 실시간 세대 스왑 중 트래픽 전부 성공                                 | 16×200, 스왑 19–22회, `generation == 1 + swaps`       |
+| `real_engine_serves_concurrent_queries`            | 실엔진 동시 배치가 같은 질의들의 순차 합보다 빠름                    | 3라운드 중앙값 overlap_ratio **0.65–0.69** (7회 실행) |
+
+- **실엔진 테스트 조건**: `artifacts/` 세트와 로컬 HuggingFace 캐시 모델이 있어야 실행되며
+  (없으면 자동 skip), 엔진 로딩 포함 ~10초입니다. `HF_HUB_OFFLINE=1`로 측정이 네트워크 상태에
+  흔들리지 않으며, 단계별 타이밍은 `[real phases]`·`[real round N]`·`[real margin]`·
+  `[real gil-vs-lock]` 프린트로 남습니다 (`-s`로 확인).
+- **마진 근거**: 임계 0.85는 단발 실행이 0.56–0.79로 흔들리던 것(콜드 기준선 오염 → 과소, 배치
+  wall 편차 → 과대)을 3라운드 중앙값(0.65–0.69, 스프레드 0.04)으로 안정화한 뒤 재산정한 값입니다.
+  직렬화된 sidecar는 어느 라운드에서도 ratio ≈ 1.00에서 벗어나지 못해 중앙값이 가릴 수 없고,
+  요청당 지연 3.4–4.1x 상승이 `max/sum` 0.65–0.69와 함께 관측되어야 GIL/CPU 포화이지 락이
+  아님을 뜻합니다.
 
 ```bash
 # 현재 버전 확인
@@ -472,6 +459,5 @@ git tag -l 'semantic-search-v*'
 1. 질의 확장 (약어 사전) · 경량 교차 인코더 리랭킹 — 극단 약어 미스와 recall@3 하락 공략
 2. `notice_archives_fts` + 벡터 검색 하이브리드 (단순 BM25 RRF는 위 "설계 결정 및 한계" 참고)
 3. `aiSummary` (Ollama 요약)를 청킹 대상에 포함해 검색 품질 향상
-4. 백엔드 `SemanticSearchService` 통합 및 `notice_archives` 변경 이벤트 기반 인덱싱 (전체 재구축은
-   수십 분 단위라 증분화 가치가 큽니다)
+4. ~~백엔드 `SemanticSearchService` 통합 및 `notice_archives` 변경 이벤트 기반 인덱싱~~
 5. 미검증 후보 (`nlpai-lab/KoE5`, `dragonkue/BGE-m3-ko` 등)와의 추가 A/B
