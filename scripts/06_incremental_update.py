@@ -10,7 +10,7 @@ design and consistency rules: agent_memories/07-incremental-indexing/plan.md.
 
 Usage:
     python scripts/06_incremental_update.py
-        [--db ../backend/lawcast.db | --input data/sample_notices.jsonl]
+        [--db lawcast.db | --input data/sample_notices.jsonl]
         [--plan-only] [--model nlpai-lab/KURE-v1]
         [--chunks artifacts/chunks.jsonl] [--embeddings artifacts/embeddings.npz]
         [--index artifacts/faiss.index] [--id-map artifacts/id_map.json]
