@@ -27,6 +27,7 @@ _EXPORTS = {
     'detect_sections': '.preprocess',
     'normalize_text': '.preprocess',
     'SearchResult': '.search',
+    'SearchResults': '.search',
     'SemanticSearcher': '.search',
 }
 

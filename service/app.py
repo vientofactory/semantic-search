@@ -201,7 +201,24 @@ class SearchResponse(BaseModel):
     # backend/src/modules/semantic-search/semantic-search.types.ts (pinned
     # by the contract spec there).
     lastUpdateAt: str | None
+    # Clear hits (score >= CLEAR_SIMILARITY) and the weak band between
+    # MIN_SIMILARITY and CLEAR_SIMILARITY; unrelated hits below the floor
+    # are dropped by the engine and appear in neither list.
     results: list[SearchHit]
+    weakResults: list[SearchHit]
+
+
+def _hit(result: Any) -> SearchHit:
+    """Map one engine SearchResult onto the wire hit shape."""
+    return SearchHit(
+        chunkId=result.chunk_id,
+        noticeNum=result.notice_num,
+        subject=result.subject,
+        committee=result.committee,
+        section=result.section,
+        score=result.score,
+        text=result.text,
+    )
 
 
 def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -> None:
@@ -353,22 +370,12 @@ def search(
             status_code=503,
             detail=f'semantic engine unavailable: {snapshot["error"]}',
         )
-    results = snapshot['searcher'].search(query, k=k)
+    outcome = snapshot['searcher'].search_tiered(query, k=k)
     return SearchResponse(
         query=query,
         k=k,
         model=snapshot['model'],
         lastUpdateAt=snapshot['lastUpdateAt'],
-        results=[
-            SearchHit(
-                chunkId=result.chunk_id,
-                noticeNum=result.notice_num,
-                subject=result.subject,
-                committee=result.committee,
-                section=result.section,
-                score=result.score,
-                text=result.text,
-            )
-            for result in results
-        ],
+        results=[_hit(result) for result in outcome.results],
+        weakResults=[_hit(result) for result in outcome.weak_results],
     )

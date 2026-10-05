@@ -13,7 +13,7 @@
 
 [project]
 name = "lawcast-semantic-search"
-version = "2.1.1"
+version = "2.2.0"
 description = "LawCast semantic search pipeline and FastAPI sidecar (KURE-v1 + FAISS)"
 readme = "README.md"
 requires-python = ">=3.13"

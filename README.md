@@ -180,7 +180,12 @@ curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호
   **k의 단위는 청크**입니다: 백엔드는 chunk → 공고 중복 제거 후에도 공고 k개를 채우기 위해 청크를
   과요청하며 k 상한(`MAX_K`)은
   `backend/src/modules/semantic-search/semantic-search.contract.spec.ts`가 양쪽 계약과 함께
-  고정합니다. 엔진 로딩 중/로딩 실패 시 503 + 사유. 모델은 시작 시 백그라운드에서 1회 로딩되며
+  고정합니다. **결과 계층**: 코사인 유사도 ≥ `CLEAR_SIMILARITY`(기본 0.45)는 `results`(명확한
+  결과), 그 아래 ~ `MIN_SIMILARITY`(기본 0.25)는 `weakResults`(약한 관련 결과 — 프런트엔드는
+  빈 결과 화면의 버튼으로만 표시), 0.25 미만은 무관하여 응답에서 아예 제외됩니다. 명확한 결과가
+  없으면 `results`가 빈 배열로 반환됩니다. 임계값은 `LAWCAST_SEMANTIC_MIN_SIMILARITY` /
+  `LAWCAST_SEMANTIC_CLEAR_SIMILARITY`로 조정합니다 (둘 사이 관계 검증 포함). 엔진 로딩 중/로딩
+  실패 시 503 + 사유. 모델은 시작 시 백그라운드에서 1회 로딩되며
   요청을 블로킹하지 않고 로딩 실패는 프로세스 재시작 전까지 유지됩니다.
 - 백엔드 설정: `SEMANTIC_SEARCH_ENABLED` / `SEMANTIC_SEARCH_API_URL` (기본
   `http://127.0.0.1:8300`) / `SEMANTIC_SEARCH_TIMEOUT` (기본 10초). 루트 `docker-compose.yml`에서
@@ -231,7 +236,9 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
   load-validate-swap. 엔진이 `ready`일 때만 돌고 `failed`면 루프를 멈춥니다. 잘못된 크론 식은
   ERROR 로그 후 스케줄만 끕니다 (서빙은 그대로). 틱의 트리거·결과는 각각
   `update tick triggered` / `update tick finished: <result>` INFO 로그로 사이드카 로그에 남고,
-  결과는 `/health.lastUpdateResult`로 관측됩니다.
+  결과는 `/health.lastUpdateResult`로 관측됩니다. `unchanged`가 아닌 결과는 공고 추가/수정/삭제
+  수, 청크·임베딩 수, 소요 시간, 실패 사유를 담은 `index update: ...` 상세 INFO 로그가 한 줄 더
+  남습니다 (`unchanged` 틱은 조용히 두 줄만).
 - **`POST /reload`** (내부 네트워크, 무인증) — 디스크 아티팩트를 즉시 스왑: `200` (health 본문,
   generation 증가) / `409` (엔진 미준비, 또는 갱신 진행 중 —
   `an index update is already in progress`) / `503` (새 세대 검증 실패, 이전 세대가 계속 서빙,
@@ -318,6 +325,12 @@ results = searcher.search('세입자 보호', k=5)  # 아티팩트 지문/모델
   측에서 제공합니다.
 - FAISS top-k 탐색 후 코사인 유사도 점수와 청크 메타데이터 (공고 번호, 제목, 섹션, 원문 발췌)를
   랭킹 출력합니다.
+- **관련도 계층화** (`SemanticSearcher.search_tiered`): 상위 k개 창을
+  `CLEAR_SIMILARITY` 이상 = 명확한 결과 (`results`), `MIN_SIMILARITY` 이상 = 약한 결과
+  (`weak_results`, 별도 전달), 미만 = 무관 (제외)으로 분리합니다. 두 임계값은
+  `LAWCAST_SEMANTIC_MIN_SIMILARITY` (기본 0.25) / `LAWCAST_SEMANTIC_CLEAR_SIMILARITY`
+  (기본 0.45)로 조정하며, 사이드카 `/search`는 이 계층을 `results` / `weakResults`로 그대로
+  전달합니다. 원 랭킹이 필요한 CLI·평가 도구는 `search()`를 그대로 사용합니다.
 
 ## 실행 결과 예시
 

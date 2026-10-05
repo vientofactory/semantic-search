@@ -239,3 +239,70 @@ def test_empty_query_returns_nothing(tmp_path: Path):
     index.build(vectors)
     searcher = SemanticSearcher(StubEmbedder(vectors[0]), index, [], {})
     assert searcher.search('   ', k=3) == []
+
+
+def _tiered_searcher(tmp_path: Path, vectors: np.ndarray, query: np.ndarray) -> SemanticSearcher:
+    records = make_records(len(vectors))
+    chunks_path, index_path, id_map_path = build_artifacts(tmp_path, records, vectors)
+    return SemanticSearcher.load(
+        StubEmbedder(query),
+        chunks_path=chunks_path,
+        index_path=index_path,
+        id_map_path=id_map_path,
+    )
+
+
+def test_search_tiered_splits_clear_weak_and_unrelated(tmp_path: Path, monkeypatch):
+    """score >= CLEAR -> clear, MIN <= score < CLEAR -> weak, below MIN -> dropped."""
+    from lawcast_semantic import config
+
+    monkeypatch.setattr(config, 'MIN_SIMILARITY', 0.25)
+    monkeypatch.setattr(config, 'CLEAR_SIMILARITY', 0.45)
+    # Query vector is row 0 (e_0), so each row's cosine score is known:
+    # 1.0 (clear), 0.35 (weak), 0.0 and 0.1 (unrelated, dropped).
+    vectors = np.asarray(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.35, 0.9367497, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.1, 0.0, 0.9949874, 0.0],
+        ],
+        dtype='float32',
+    )
+    searcher = _tiered_searcher(tmp_path, vectors, vectors[0])
+
+    outcome = searcher.search_tiered('질의', k=4)
+
+    assert [hit.chunk_id for hit in outcome.results] == ['chunk-0']
+    assert outcome.results[0].score == pytest.approx(1.0, abs=1e-5)
+    assert [hit.chunk_id for hit in outcome.weak_results] == ['chunk-1']
+    assert outcome.weak_results[0].score == pytest.approx(0.35, abs=1e-5)
+    # Unrelated hits appear in neither tier.
+    listed = {hit.chunk_id for hit in outcome.results + outcome.weak_results}
+    assert listed.isdisjoint({'chunk-2', 'chunk-3'})
+
+
+def test_search_tiered_returns_nothing_when_everything_is_unrelated(tmp_path: Path, monkeypatch):
+    """The 'no clear results' contract: nothing qualifies -> two empty lists."""
+    from lawcast_semantic import config
+
+    monkeypatch.setattr(config, 'MIN_SIMILARITY', 0.25)
+    monkeypatch.setattr(config, 'CLEAR_SIMILARITY', 0.45)
+    # All rows score below the 0.25 floor against query vector e_0.
+    vectors = np.asarray(
+        [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.2, 0.9797959, 0.0, 0.0],
+        ],
+        dtype='float32',
+    )
+    searcher = _tiered_searcher(
+        tmp_path, vectors, np.asarray([1.0, 0.0, 0.0, 0.0], dtype='float32')
+    )
+
+    outcome = searcher.search_tiered('질의', k=4)
+
+    assert outcome.results == []
+    assert outcome.weak_results == []

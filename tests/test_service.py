@@ -38,10 +38,26 @@ def client(monkeypatch):
             )
         ][:k]
 
+    def stub_search_tiered(query: str, k: int):
+        # The engine tiers hits; the sidecar only passes the two lists
+        # through (weak example rides along so /search weakResults is real).
+        weak = [
+            SimpleNamespace(
+                chunk_id='2220715-0000',
+                notice_num=2220715,
+                subject='주택 임대차 보증금 반환 특례법안',
+                committee='국토교통위원회',
+                section='제안이유',
+                score=0.35,
+                text='관련도가 낮은 결과 예시...',
+            )
+        ][:k]
+        return SimpleNamespace(results=stub_search(query, k), weak_results=weak)
+
     def ready_loader(state, boot_repair=None):
         state.mark_ready(
             SimpleNamespace(
-                search=stub_search,
+                search_tiered=stub_search_tiered,
                 chunk_ids=['2220607-0000'],
                 index_updated_at=STUB_STAMP,
             ),
@@ -66,6 +82,19 @@ def test_search_returns_ranked_hits(client):
     assert hit['section'] == '주요내용'
     assert hit['score'] == pytest.approx(0.5863)
     assert 'text' in hit
+
+
+def test_search_passes_weak_results_through_separately(client):
+    """Clear hits land in `results`; the weak band rides in `weakResults`
+    (never mixed into the main list) so the UI can hide it behind a reveal."""
+    body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
+    assert [hit['noticeNum'] for hit in body['results']] == [2220607]
+    assert [hit['noticeNum'] for hit in body['weakResults']] == [2220715]
+    assert body['weakResults'][0]['score'] == pytest.approx(0.35)
+    # The two tiers never overlap on a notice.
+    assert {hit['noticeNum'] for hit in body['results']}.isdisjoint(
+        hit['noticeNum'] for hit in body['weakResults']
+    )
 
 
 def test_search_rejects_blank_and_overlong_query(client):

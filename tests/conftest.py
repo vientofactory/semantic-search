@@ -70,6 +70,13 @@ class StubSearcher:
             with self._probe:
                 self.in_flight -= 1
 
+    def search_tiered(self, query: str, k: int = 5):
+        """Sidecar entry point; the probe lives in `search`, so the tiered
+        wrapper delegates to it and reports every hit as clear."""
+        from lawcast_semantic.search import SearchResults
+
+        return SearchResults(results=self.search(query, k), weak_results=[])
+
 
 def ready_loader(searcher: StubSearcher):
     """Background loader that registers `searcher` immediately (design §6.1)."""
