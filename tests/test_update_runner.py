@@ -70,6 +70,11 @@ def artifact_snapshot(paths: dict) -> dict:
     return {name: path.read_bytes() if path.exists() else None for name, path in paths.items()}
 
 
+def detail_lines(caplog) -> list[str]:
+    """The `index update:` detail records a cycle emitted (non-unchanged outcomes only)."""
+    return [message for message in caplog.messages if message.startswith('index update:')]
+
+
 def ready_state(env):
     """Boot-equivalent state: real load with the fingerprint recorded (§5.2)."""
     searcher = SemanticSearcher.load(env.embedder, **load_args())
@@ -204,6 +209,53 @@ def test_cycle_logs_trigger_and_result(env, caplog):
     ]
 
 
+def test_cycle_logs_detail_when_not_unchanged(env, caplog):
+    """Every non-unchanged outcome adds one `index update:` detail line with
+    result, elapsed time, and the plan's counts; 'unchanged' stays quiet."""
+    state = ready_state(env)
+    notice = make_notice(9999, reason='신규 의안의 제안이유입니다. 본안의 필요성을 설명합니다.')
+    execute(env.db_path, 'INSERT INTO notice_archives VALUES (?,?,?,?,?,?)', db_row(notice))
+
+    with caplog.at_level(logging.INFO, logger='service.update_runner'):
+        runner.run_update_cycle(state, env.embedder)
+    details = detail_lines(caplog)
+    assert len(details) == 1  # exactly one detail line for the 'changed' tick
+    assert 'result=changed' in details[0]
+    assert 'elapsed=' in details[0] and 's ' in details[0]
+    assert 'notices_added=1' in details[0]
+    assert 'notices_deleted=0' in details[0]
+    assert 'chunks_embedded=' in details[0]
+    assert 'wrote_artifacts=True' in details[0]
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger='service.update_runner'):
+        runner.run_update_cycle(state, env.embedder)  # in sync now
+    assert detail_lines(caplog) == []
+    assert 'update tick finished: unchanged' in caplog.messages
+
+
+def test_cycle_reload_failure_detail_carries_error(env, monkeypatch, caplog):
+    """Plan and apply succeed but the swap fails: the detail line keeps the
+    work counts and is the only log surface for `reload_error`."""
+    state = ready_state(env)
+    notice = make_notice(9999, reason='신규 의안의 제안이유입니다. 본안의 필요성을 설명합니다.')
+    execute(env.db_path, 'INSERT INTO notice_archives VALUES (?,?,?,?,?,?)', db_row(notice))
+
+    def refuse(cls, embedder, **kwargs):
+        raise ValueError('swap refused')
+
+    monkeypatch.setattr(SemanticSearcher, 'load', classmethod(refuse))
+
+    with caplog.at_level(logging.INFO, logger='service.update_runner'):
+        assert runner.run_update_cycle(state, env.embedder) == 'failed'
+    details = detail_lines(caplog)
+    assert len(details) == 1
+    assert 'result=failed' in details[0]
+    assert 'notices_added=1' in details[0]  # plan/apply counts survived the swap failure
+    assert 'wrote_artifacts=True' in details[0]  # artifacts landed before the reload failed
+    assert 'error=ValueError: swap refused' in details[0]
+
+
 def test_cycle_reports_in_flight_state_while_running(env, monkeypatch):
     """/health can show a tick mid-run: `updating` flips on at the trigger
     (previous result still visible, stamp advanced) and off at the outcome."""
@@ -215,7 +267,7 @@ def test_cycle_reports_in_flight_state_while_running(env, monkeypatch):
     def gated_tick(_state, _embedder):
         entered.set()
         assert release.wait(timeout=5)
-        return 'changed', None
+        return 'changed', None, None
 
     monkeypatch.setattr(runner, '_tick', gated_tick)
     worker = threading.Thread(target=runner.run_update_cycle, args=(state, env.embedder))
@@ -294,13 +346,20 @@ def test_cycle_keeps_previous_generation_on_reload_failure_then_self_heals(env, 
     assert state.reload_error is None
 
 
-def test_cycle_refuses_large_delete_and_keeps_serving(env):
+def test_cycle_refuses_large_delete_and_keeps_serving(env, caplog):
     state = ready_state(env)
     before = artifact_snapshot(env.paths)
     execute(env.db_path, 'DELETE FROM notice_archives WHERE noticeNum < 1110')  # 110 of 120
 
-    assert runner.run_update_cycle(state, env.embedder) == 'failed'
+    with caplog.at_level(logging.INFO, logger='service.update_runner'):
+        assert runner.run_update_cycle(state, env.embedder) == 'failed'
     assert 'shrink guard' in state.last_update_error
+    # The refusal is detailed too: deleted count and the guard reason.
+    details = detail_lines(caplog)
+    assert len(details) == 1
+    assert 'result=failed' in details[0]
+    assert 'notices_deleted=110' in details[0]
+    assert 'error=shrink guard' in details[0]
     assert state.status == 'ready'
     assert state.generation == 1
     assert artifact_snapshot(env.paths) == before
@@ -325,6 +384,14 @@ def test_cycle_skip_and_failure_outcomes(env, monkeypatch, caplog, scenario, exp
     # Trigger and result are logged for every outcome; the in-flight flag clears.
     assert 'update tick triggered' in caplog.messages
     assert f'update tick finished: {expected}' in caplog.messages
+    # Skipped (no plan ran) and failed (plan raised) still get a detail line.
+    details = detail_lines(caplog)
+    assert len(details) == 1
+    assert f'result={expected}' in details[0]
+    assert 'elapsed=' in details[0]
+    if scenario == 'no_db':
+        assert 'error=' in details[0]  # the failure reason rides on the detail line
+
     assert state.updating is False
     assert state.last_update_triggered_at is not None
 

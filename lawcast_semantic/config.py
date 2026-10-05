@@ -116,6 +116,20 @@ ALLOW_LARGE_DELETE = os.environ.get('LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE', '').s
     'on',
 }
 
+# Relevance tiers for query results (stage 4 cosine similarity, range
+# [-1, 1]). MIN_SIMILARITY is the relatedness floor: hits scoring below it
+# are unrelated to the query and dropped entirely. CLEAR_SIMILARITY separates
+# the clear results (shown by default) from the weak band between the two
+# thresholds, which callers serve separately so the UI can hide them behind
+# an explicit reveal. MIN_SIMILARITY must not exceed CLEAR_SIMILARITY.
+MIN_SIMILARITY = float(os.environ.get('LAWCAST_SEMANTIC_MIN_SIMILARITY', '0.25'))
+CLEAR_SIMILARITY = float(os.environ.get('LAWCAST_SEMANTIC_CLEAR_SIMILARITY', '0.45'))
+if MIN_SIMILARITY > CLEAR_SIMILARITY:
+    raise ValueError(
+        'LAWCAST_SEMANTIC_MIN_SIMILARITY must be <= LAWCAST_SEMANTIC_CLEAR_SIMILARITY '
+        f'(got {MIN_SIMILARITY} > {CLEAR_SIMILARITY})'
+    )
+
 # Chunking parameters (character based; stage 2 reports token-level fit).
 # Calibrated for jhgan/ko-sbert-sts (max_seq_length=128 tokens): Korean legal
 # prose tokenizes at roughly 1.8-1.9 chars/token, so 200 chars keeps chunks

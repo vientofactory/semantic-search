@@ -28,7 +28,7 @@ from croniter import CroniterError, croniter
 from lawcast_semantic import config
 
 if TYPE_CHECKING:
-    from lawcast_semantic.incremental import UpdatePlan
+    from lawcast_semantic.incremental import UpdatePlan, UpdateReport
 
     from .app import EngineState
 
@@ -96,6 +96,26 @@ def _apply(plan: UpdatePlan, embed_texts, model_name: str):
     )
 
 
+def _detail_summary(plan: UpdatePlan, report: UpdateReport | None) -> str:
+    """Flat `key=value` work summary for the non-unchanged detail log line.
+
+    Counts come from the plan (always computed by `_plan_for`); `wrote_artifacts`
+    only exists when the plan was actually applied.
+    """
+    parts = [
+        f'notices_added={len(plan.added_notices)}',
+        f'notices_updated={len(plan.updated_notices)}',
+        f'notices_deleted={len(plan.deleted_notices)}',
+        f'chunks_total={len(plan.new_records)}',
+        f'chunks_embedded={len(plan.embed_records)}',
+        f'chunks_reused={len(plan.reused_chunk_ids)}',
+        f'chunks_dropped={len(plan.dropped_chunk_ids)}',
+    ]
+    if report is not None:
+        parts.append(f'wrote_artifacts={report.wrote_artifacts}')
+    return ' '.join(parts)
+
+
 def _disk_fingerprint() -> str | None:
     """Set fingerprint committed in id_map.json; None when unreadable (= mismatch)."""
     try:
@@ -125,7 +145,10 @@ def run_boot_repair(embedder: Any, db_path: str | Path) -> bool:
         return _apply(plan, None, embedder.model_name).wrote_artifacts
 
 
-def _tick(state: EngineState, embedder: Any) -> tuple[str, str | None]:
+def _tick(state: EngineState, embedder: Any) -> tuple[str, str | None, str | None]:
+    """One plan-apply-reload pass; the third element is the detail summary the
+    cycle logs for every outcome other than 'unchanged' (None when there is
+    nothing to summarize, e.g. the tick never ran a plan)."""
     plan = _plan_for(config.DB_PATH, embedder.model_name)
     if _shrink_refused(plan):
         error = (
@@ -133,14 +156,18 @@ def _tick(state: EngineState, embedder: Any) -> tuple[str, str | None]:
             'check the DB, then set LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE=true to override'
         )
         logger.error(error)
-        return 'failed', error
+        return 'failed', error, _detail_summary(plan, None)
+    report = None
     if plan.has_changes:
-        _apply(plan, embedder.embed_texts if plan.needs_embedding else None, embedder.model_name)
+        report = _apply(
+            plan, embedder.embed_texts if plan.needs_embedding else None, embedder.model_name
+        )
     elif (disk := _disk_fingerprint()) is not None and disk == state.loaded_fingerprint:
-        return 'unchanged', None  # memory and disk agree (§5.3)
+        return 'unchanged', None, None  # memory and disk agree (§5.3)
     if not state.reload(embedder):
-        return 'failed', state.reload_error  # old generation still serves (§5.2)
-    return 'changed', None
+        # old generation still serves (§5.2)
+        return 'failed', state.reload_error, _detail_summary(plan, report)
+    return 'changed', None, _detail_summary(plan, report)
 
 
 def run_reload(state: EngineState, embedder: Any) -> str:
@@ -167,23 +194,34 @@ def run_update_cycle(state: EngineState, embedder: Any) -> str:
 
     Trigger and result are both logged (the sidecar's log stream is the
     incremental-work record) and bracketed on EngineState, so /health shows a
-    tick while it runs and what it did after.
+    tick while it runs and what it did after. Every result other than
+    'unchanged' additionally emits one `index update:` detail line with the
+    notice/chunk counts, elapsed seconds, result, and failure reason.
     Returns the §5.2 result vocabulary: 'changed' (artifacts written and
     swapped in, or a stale memory reloaded), 'unchanged', 'failed', or
     'skipped' (a manual run holds the lock).
     """
     state.record_tick_started()
     logger.info('update tick triggered')
+    started = time()
     try:
         with _update_lock():
-            result, error = _tick(state, embedder)
+            result, error, detail = _tick(state, embedder)
     except BlockingIOError:
-        result, error = 'skipped', None
+        result, error, detail = 'skipped', None, None
         logger.warning('update tick skipped: another holder owns .update.lock')
     except Exception as exc:  # noqa: BLE001 - one bad tick must not kill the scheduler
-        result, error = 'failed', f'{type(exc).__name__}: {exc}'
+        result, error, detail = 'failed', f'{type(exc).__name__}: {exc}', None
         logger.warning('update tick failed: %s', error)
     state.record_update(result, error)
+    if result != 'unchanged':
+        # Detailed work record: counts/elapsed/result in one greppable line.
+        summary = f'result={result} elapsed={time() - started:.2f}s'
+        if detail:
+            summary = f'{summary} {detail}'
+        if error:
+            summary = f'{summary} error={error}'
+        logger.info('index update: %s', summary)
     logger.info('update tick finished: %s', result)
     return result
 

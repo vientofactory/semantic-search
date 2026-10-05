@@ -24,6 +24,8 @@ STRIPPED_ENV = {
     'LAWCAST_SEMANTIC_DEVICE',
     'LAWCAST_SEMANTIC_BATCH',
     'LAWCAST_SEMANTIC_MODEL',
+    'LAWCAST_SEMANTIC_MIN_SIMILARITY',
+    'LAWCAST_SEMANTIC_CLEAR_SIMILARITY',
 }
 
 
@@ -89,6 +91,44 @@ def test_refresh_gates_default_to_disabled():
     """Design §4.2: empty DB_PATH (the off gate), hourly cron, delete guard off."""
     lines = run_config('DB_PATH', 'UPDATE_CRON', 'ALLOW_LARGE_DELETE')
     assert lines == ['', '0 * * * *', 'False']
+
+
+def test_similarity_tiers_default_to_floor_and_clear_threshold():
+    """Relatedness floor (below = dropped) and clear-results threshold
+    (between the two = weak band, hidden behind a reveal in the UI)."""
+    lines = run_config('MIN_SIMILARITY', 'CLEAR_SIMILARITY')
+    assert lines == ['0.25', '0.45']
+
+
+def test_similarity_tier_env_overrides():
+    lines = run_config(
+        'MIN_SIMILARITY',
+        'CLEAR_SIMILARITY',
+        env_overrides={
+            'LAWCAST_SEMANTIC_MIN_SIMILARITY': '0.3',
+            'LAWCAST_SEMANTIC_CLEAR_SIMILARITY': '0.6',
+        },
+    )
+    assert lines == ['0.3', '0.6']
+
+
+def test_min_similarity_above_clear_fails_fast():
+    """A floor above the clear threshold would silently invert the tiers,
+    so the config refuses to import instead."""
+    env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV}
+    env[ENV_FILE_ENV] = ''
+    env['LAWCAST_SEMANTIC_MIN_SIMILARITY'] = '0.6'
+    env['LAWCAST_SEMANTIC_CLEAR_SIMILARITY'] = '0.3'
+    result = subprocess.run(
+        [sys.executable, '-c', 'import lawcast_semantic.config'],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert 'MIN_SIMILARITY must be <=' in result.stderr
 
 
 def test_refresh_db_path_and_cron_env_overrides():

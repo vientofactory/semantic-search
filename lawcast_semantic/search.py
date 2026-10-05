@@ -28,6 +28,21 @@ class SearchResult:
     text: str
 
 
+@dataclass
+class SearchResults:
+    """Tiered outcome of one query (see `SemanticSearcher.search_tiered`).
+
+    `results` are clear hits (score >= CLEAR_SIMILARITY); `weak_results` are
+    the weak band (MIN_SIMILARITY <= score < CLEAR_SIMILARITY) that callers
+    serve separately so the UI can hide them behind an explicit reveal. Hits
+    below MIN_SIMILARITY are unrelated to the query and dropped entirely.
+    Both tiers keep ranked order.
+    """
+
+    results: list[SearchResult]
+    weak_results: list[SearchResult]
+
+
 class SemanticSearcher:
     """Query -> embed -> FAISS top-k -> ranked SearchResult list."""
 
@@ -101,7 +116,11 @@ class SemanticSearcher:
         )
 
     def search(self, query: str, k: int = 5) -> list[SearchResult]:
-        """Process one query and return top-k chunks ranked by similarity.
+        """Process one query and return raw top-k chunks ranked by similarity.
+
+        No relevance policy is applied here — callers that expose results to
+        users go through `search_tiered`; tools (CLI, evaluation) that need
+        the unfiltered ranking use this method directly.
 
         Equal scores are broken by chunk_id so ranking is reproducible even
         when the corpus contains duplicate content.
@@ -131,3 +150,21 @@ class SemanticSearcher:
                 )
             )
         return results
+
+    def search_tiered(self, query: str, k: int = 5) -> SearchResults:
+        """Rank like `search()`, then split the top-k window by relevance tier.
+
+        The two thresholds come from `config.MIN_SIMILARITY` /
+        `config.CLEAR_SIMILARITY`. Unrelated hits (below the floor) vanish
+        entirely, so a query with no qualifying hit returns two empty lists
+        rather than padded results; the tiers are cut from the same top-k
+        window, so `len(results) + len(weak_results) <= k`.
+        """
+        clear: list[SearchResult] = []
+        weak: list[SearchResult] = []
+        for hit in self.search(query, k):
+            if hit.score >= config.CLEAR_SIMILARITY:
+                clear.append(hit)
+            elif hit.score >= config.MIN_SIMILARITY:
+                weak.append(hit)
+        return SearchResults(results=clear, weak_results=weak)
