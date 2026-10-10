@@ -221,7 +221,7 @@ def test_missing_env_file_fails_safe(tmp_path: Path):
         'UPDATE_CRON',
         env_overrides={ENV_FILE_ENV: str(tmp_path / 'nope.env')},
     )
-    assert lines == ['cpu', '0 * * * *']
+    assert lines == ['auto', '0 * * * *']
 
 
 def test_empty_env_file_path_disables_loading(tmp_path: Path):
@@ -229,4 +229,19 @@ def test_empty_env_file_path_disables_loading(tmp_path: Path):
     env_file = tmp_path / '.env'
     env_file.write_text('LAWCAST_SEMANTIC_DEVICE=mps\n', encoding='utf-8')
     lines = run_config('DEVICE', env_overrides={ENV_FILE_ENV: ''})
-    assert lines == ['cpu'], f'file was read despite being disabled: {env_file.exists()}'
+    assert lines == ['auto'], f'file was read despite being disabled: {env_file.exists()}'
+
+
+def test_device_defaults_to_auto_detection():
+    """No pin anywhere = probe for better-than-CPU hardware at model load
+    (lawcast_semantic/device.py), never a silent hardcoded cpu."""
+    (line,) = run_config('DEVICE')
+    assert line == 'auto'
+
+
+def test_device_pin_is_kept_verbatim():
+    """An explicit pin (including 'cpu') must survive so operators can force
+    a device — the probe only runs for 'auto'."""
+    for value in ('cpu', 'mps', 'cuda:1', 'auto'):
+        (line,) = run_config('DEVICE', env_overrides={'LAWCAST_SEMANTIC_DEVICE': value})
+        assert line == value, value

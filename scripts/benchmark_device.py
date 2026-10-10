@@ -1,10 +1,14 @@
-"""One-off benchmark: measure embedding throughput on cpu vs mps.
+"""One-off benchmark: measure embedding throughput on cpu vs the accelerator.
 
 Usage: python scripts/benchmark_device.py [num_texts]
 
-Extrapolates full-corpus embedding time from measured throughput.
-Not part of the production pipeline; kept for reproducibility of the
-device selection decision documented in the agent memories.
+Targets are `cpu` plus whatever `resolve_device('auto')` picks on this host
+(MPS on Apple Silicon, CUDA on a CUDA box, no second target on cpu-only
+hosts), so the cpu baseline is always compared against the device the
+pipeline would actually run on. Extrapolates full-corpus embedding time
+from measured throughput. Not part of the production pipeline; kept for
+reproducibility of the device selection decision documented in the agent
+memories.
 """
 
 import os
@@ -13,11 +17,21 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run-from-source bootstrap
+from lawcast_semantic.device import resolve_device  # noqa: E402
 from lawcast_semantic.embedding import KoreanEmbedder  # noqa: E402
 
 
-def bench(device: str, texts: list[str], batch_size: int) -> float:
+def bench(device: str, texts: list[str], batch_size: int) -> float | None:
+    """Seconds to embed `texts` on `device`, or None when it is unavailable.
+
+    `KoreanEmbedder` degrades an unusable accelerator to cpu with a warning
+    instead of raising, so the RESOLVED device must be checked before timing
+    — otherwise an mps-less host would publish its cpu numbers under the
+    `mps` label (the exception path below never triggers for a fallback).
+    """
     client = KoreanEmbedder(device=device)
+    if client.device != device:
+        return None
     start = time.perf_counter()
     client.embed_texts(texts, batch_size=batch_size)
     return time.perf_counter() - start
@@ -33,11 +47,19 @@ def main() -> None:
     batch_size = int(os.environ.get('LAWCAST_SEMANTIC_BATCH', '32'))
     total_chunks = 96754
 
-    for device in ('cpu', 'mps'):
+    # Hardware capability, independent of any LAWCAST_SEMANTIC_DEVICE pin:
+    # the benchmark compares cpu against what this host can actually run.
+    accelerator = resolve_device('auto')
+    devices = ['cpu'] if accelerator == 'cpu' else ['cpu', accelerator]
+
+    for device in devices:
         try:
             elapsed = bench(device, texts, batch_size)
         except Exception as exc:  # noqa: BLE001
             print(f'{device}: FAILED ({exc})')
+            continue
+        if elapsed is None:
+            print(f'{device}: unavailable on this host (embedder degrades to cpu)')
             continue
         rate = n / elapsed
         projected = total_chunks / rate

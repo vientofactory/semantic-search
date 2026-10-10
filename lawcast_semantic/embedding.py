@@ -5,16 +5,24 @@ Wraps a Korean-specialized sentence-transformers model (default:
 both the tokenizer step (token counts / truncation against the model's
 max sequence length) and the embedding step (pooled vectors,
 L2-normalized for cosine similarity).
+
+The run device comes from `lawcast_semantic.device`: `auto` (the default)
+picks hardware faster than CPU when present, and any accelerator failure
+degrades to cpu with a warning.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from . import config
+from .device import resolve_device
+
+logger = logging.getLogger(__name__)
 
 
 class KoreanEmbedder:
@@ -26,10 +34,54 @@ class KoreanEmbedder:
         device: str = config.DEVICE,
     ) -> None:
         self.model_name = model_name
-        self.model = SentenceTransformer(model_name, device=device)
+        self.requested_device = device
+        self.device, self.model = self._load_model(model_name, device)
         self.tokenizer = self.model.tokenizer
         self.max_seq_length = int(self.model.max_seq_length)
         self.dimension = int(self.model.get_embedding_dimension())
+
+    @staticmethod
+    def _load_model(model_name: str, device: str) -> tuple[str, SentenceTransformer]:
+        """Load the model on the resolved device, degrading to cpu.
+
+        Both an `auto` pick and an explicit pin go through the same gate: the
+        accelerator path must prove itself with a tiny probe forward pass,
+        because a device can construct the model fine and still fail (or
+        return non-finite vectors) on the first encode — and a mid-corpus
+        failure would strand a long stage-2 run halfway through. Any failure
+        on a non-cpu device falls back to cpu with a warning instead of
+        aborting, since the device never changes the vectors' meaning.
+        """
+        resolved = resolve_device(device)
+        try:
+            model = SentenceTransformer(model_name, device=resolved)
+            if resolved != 'cpu':
+                KoreanEmbedder._probe(model, resolved)
+        except Exception as exc:  # noqa: BLE001 - any accelerator failure degrades to cpu
+            if resolved == 'cpu':
+                raise
+            logger.warning(
+                'device %s unusable (%s: %s); falling back to cpu',
+                resolved,
+                type(exc).__name__,
+                exc,
+            )
+            resolved = 'cpu'
+            model = SentenceTransformer(model_name, device='cpu')
+        return resolved, model
+
+    @staticmethod
+    def _probe(model: SentenceTransformer, device: str) -> None:
+        """Encode one short text to prove the device actually works."""
+        expected = int(model.get_embedding_dimension())
+        encoded = model.encode(['device probe'], normalize_embeddings=True)
+        vectors = np.asarray(encoded, dtype='float32')
+        if vectors.shape != (1, expected):
+            raise RuntimeError(
+                f'{device} probe returned shape {vectors.shape}, expected (1, {expected})'
+            )
+        if not np.isfinite(vectors).all():
+            raise RuntimeError(f'{device} probe returned non-finite embeddings')
 
     def tokenize(self, text: str) -> dict:
         """Tokenize one text without truncation and report model-fit info."""

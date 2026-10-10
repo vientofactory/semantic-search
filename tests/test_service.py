@@ -147,6 +147,7 @@ def test_health_shape(client):
     assert health['status'] == 'ready'
     assert health['model'] == 'stub-model'
     assert health['indexedChunks'] == 1
+    assert health['device'] is None  # stub loader never runs the model phase
     assert health['error'] is None
     assert health['updating'] is False  # no tick has run yet
     assert health['lastUpdateTriggeredAt'] is None
@@ -243,6 +244,39 @@ def test_load_engine_success_marks_ready(phases):
     assert state.searcher is loaded
     assert state.model_name == 'stub-model'
     assert state.indexed_chunks == 1
+
+
+def test_load_engine_stamps_the_resolved_device(phases):
+    """`/health.device` reports the hardware the embedder actually runs on
+    (auto-detected accelerator, or cpu — lawcast_semantic/device.py)."""
+    import lawcast_semantic
+    import service.app as app_module
+
+    lawcast_semantic.KoreanEmbedder.device = 'mps'
+    loaded = SimpleNamespace(chunk_ids=['stub-0000'], chunks_by_id={}, index_updated_at=None)
+    phases.outcomes.append(loaded)
+    state = app_module.create_state()
+    app_module.load_engine(state)
+
+    assert state.status == 'ready'
+    assert state.device == 'mps'
+    assert state.snapshot()['device'] == 'mps'
+
+
+def test_device_is_reported_even_when_the_artifact_phase_fails(phases):
+    """The device is stamped at the model phase, so a failed index load still
+    says which hardware the model came up on (model ok vs model failed is the
+    diagnosis an operator needs first)."""
+    import lawcast_semantic
+    import service.app as app_module
+
+    lawcast_semantic.KoreanEmbedder.device = 'cuda'
+    phases.outcomes.append(FileNotFoundError('faiss.index missing'))
+    state = app_module.create_state()
+    app_module.load_engine(state)
+
+    assert state.status == 'failed'
+    assert state.device == 'cuda'
 
 
 def test_embedder_phase_failure_never_calls_repair(monkeypatch, phases):
