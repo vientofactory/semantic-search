@@ -135,7 +135,12 @@ if MIN_SIMILARITY > CLEAR_SIMILARITY:
 # prose tokenizes at roughly 1.8-1.9 chars/token, so 200 chars keeps chunks
 # inside the model window with headroom (no silent truncation). CHUNK_MAX_CHARS
 # bounds the full embedding input (subject context + body), so the body budget
-# shrinks by the subject length.
+# shrinks by the subject length. CHUNK_MIN_CHARS is the size the packer packs
+# AGAINST, never a filter: a packed chunk below it is a leftover that did not
+# fit beside its neighbour, and it is merged into the chunk in front of it
+# rather than dropped (dropping it made that text unsearchable — see
+# agent_memories/22-chunk-floor-content-loss/). Only that merge may exceed the
+# budget, by at most CHUNK_MIN_CHARS characters.
 CHUNK_MAX_CHARS = 200
 CHUNK_OVERLAP_CHARS = 50
 CHUNK_MIN_CHARS = 40

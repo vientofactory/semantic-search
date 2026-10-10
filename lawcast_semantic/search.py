@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+from .aliases import expand_query
 from .chunking import compute_chunks_fingerprint, load_chunks_jsonl
 from .indexing import VectorIndex
 from .preprocess import normalize_text
@@ -124,10 +125,14 @@ class SemanticSearcher:
 
         Equal scores are broken by chunk_id so ranking is reproducible even
         when the corpus contains duplicate content.
+
+        Citizen aliases (중처법, 산안법, ...) are rewritten to their official
+        bill names before embedding (see `aliases.expand_query`); the corpus
+        has no such surface form, so without it those queries return nothing.
         """
         if k < 1:
             raise ValueError(f'k must be >= 1, got {k}')
-        normalized = normalize_text(query)
+        normalized = normalize_text(expand_query(query).text)
         if not normalized:
             return []
         query_vector = self.embedder.embed_query(normalized)
