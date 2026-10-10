@@ -71,6 +71,10 @@ class EngineState:
         self.status: Literal['loading', 'ready', 'failed'] = 'loading'
         self.searcher: Any = None
         self.model_name: str | None = None
+        # Device the embedding model actually runs on (auto-detected
+        # accelerator or cpu) — reported by /health so an operator can see
+        # which hardware the probe picked. None until the model loads.
+        self.device: str | None = None
         self.indexed_chunks: int = 0
         self.error: str | None = None
         # §5.2 observability: what serves now, what the last tick did.
@@ -94,6 +98,7 @@ class EngineState:
                 'status': self.status,
                 'searcher': self.searcher,
                 'model': self.model_name,
+                'device': self.device,
                 'indexedChunks': self.indexed_chunks,
                 'error': self.error,
                 'generation': self.generation,
@@ -105,12 +110,18 @@ class EngineState:
                 'updating': self.updating,
             }
 
-    def mark_ready(self, searcher: Any, model_name: str, fingerprint: str | None = None) -> None:
+    def mark_ready(
+        self,
+        searcher: Any,
+        model_name: str,
+        fingerprint: str | None = None,
+    ) -> None:
         """First successful load (generation 1).
 
         `fingerprint` is the set identity the load validated; None means
         unknown, which the first tick treats as a mismatch and verifies with
-        one reload (§5.3).
+        one reload (§5.3). The run device is owned by `record_device`, which
+        runs earlier (model phase), so a ready state never erases it.
         """
         with self._lock:
             self.searcher = searcher
@@ -156,6 +167,17 @@ class EngineState:
             # (above) leaves the previous generation's time in place.
             self.last_update_at = searcher.index_updated_at
         return True
+
+    def record_device(self, device: str | None) -> None:
+        """Stamp the embedder's resolved run device (§ observability).
+
+        Called as soon as the model loads — before the artifact phase — so
+        /health still reports the detected hardware when the artifact load
+        fails (model ok, index missing is a different diagnosis than model
+        failed).
+        """
+        with self._lock:
+            self.device = device
 
     def mark_failed(self, error: str) -> None:
         with self._lock:
@@ -238,6 +260,7 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
         from lawcast_semantic import KoreanEmbedder
 
         embedder = KoreanEmbedder()
+        state.record_device(getattr(embedder, 'device', None))
     except Exception as exc:  # noqa: BLE001 - any load failure must degrade cleanly
         state.mark_failed(f'{type(exc).__name__}: {exc}')
         return
@@ -314,6 +337,10 @@ def health() -> dict:
     return {
         'status': snapshot['status'],
         'model': snapshot['model'],
+        # Embedding device the engine actually runs on (auto-detected
+        # accelerator, or cpu) — additive field, existing consumers read
+        # `status` only.
+        'device': snapshot['device'],
         'indexedChunks': snapshot['indexedChunks'],
         'error': snapshot['error'],
         'reloadError': snapshot['reloadError'],

@@ -42,6 +42,9 @@ def main() -> None:
 
     print(f'model              : {args.model} (first use downloads it from HuggingFace)')
     embedder = KoreanEmbedder(args.model)
+    # Resolved run device: `auto` (config default) probes for CUDA/MPS/XPU
+    # and reports the accelerator actually picked, or cpu when there is none.
+    print(f'device             : {embedder.device} (requested: {embedder.requested_device})')
     print(f'max_seq_length     : {embedder.max_seq_length}')
     print(f'embedding dim      : {embedder.dimension}')
 

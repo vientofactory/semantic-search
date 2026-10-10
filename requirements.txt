@@ -22,4 +22,8 @@ croniter>=6.2
 # dev / test
 pytest>=8.0
 httpx>=0.27
+# starlette.testclient prefers httpx2 (httpx fallback emits a
+# StarletteDeprecationWarning at import); httpx stays for the suite's own
+# real-HTTP calls (tests/conftest.py).
+httpx2>=2.13
 ruff>=0.16

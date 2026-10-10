@@ -39,6 +39,7 @@ flowchart LR
 semantic-search/
 ├── lawcast_semantic/             # 파이프라인 라이브러리 (자체 완결, 루트 모듈 의존 없음)
 │   ├── config.py                 #     설정·아티팩트 경로 단일 소유 (env: LAWCAST_SEMANTIC_*)
+│   ├── device.py                 #     임베딩 디바이스 단일 소유 (auto: cuda > mps > xpu > cpu)
 │   ├── datasource.py             # 0.  학습 데이터 소스: DB notice_archives.proposalReason (읽기 전용)
 │   ├── preprocess.py             # 1a. 텍스트 정규화 + 섹션(제안이유/주요내용) 감지
 │   ├── chunking.py               # 1b. 섹션 인식 청킹 (문장 경계 + 오버랩)
@@ -57,7 +58,7 @@ semantic-search/
 │   ├── 04_search.py              # 4.  질의 + 유사도 검색
 │   ├── 05_evaluate.py            #     정량 평가 (recall@k / MRR)
 │   ├── 06_incremental_update.py  # 5.  증분 갱신 (신규/수정/삭제 공고만 반영)
-│   └── benchmark_device.py       #     배치 처리량 cpu/mps 비교
+│   └── benchmark_device.py       #     배치 처리량 cpu vs 자동 탐지 가속기 비교
 ├── data/                        # 평가셋·샘플 스냅샷 (git 추적)
 │   ├── sample_notices.jsonl      # 평가 코퍼스 스냅샷
 │   ├── eval_holdout_queries.jsonl # 홀드아웃 평가셋 (실사용자 스타일 질의)
@@ -162,12 +163,14 @@ curl http://127.0.0.1:8300/health
 curl 'http://127.0.0.1:8300/search?query=임대차 계약에서 세입자 보호&k=3'
 ```
 
-- `GET /health` → `{status: loading|ready|failed, model, indexedChunks, error}` + 갱신 관측 필드
+- `GET /health` → `{status: loading|ready|failed, model, device, indexedChunks, error}` + 갱신 관측 필드
   7종: `generation` (성공적 로드/스왑마다 증가), `reloadError`, `lastUpdateAt`,
   `lastUpdateResult` (`changed|unchanged|failed|skipped`), `lastUpdateError`,
   `lastUpdateTriggeredAt` (가장 최근 틱의 트리거 시각, UTC ISO 8601 · 재시작 시 `null`),
   `updating` (틱 진행 중 여부 — 긴 틱도 실행 중에 확인 가능). 추가 계약이며 기존
   소비자는 `status`만 읽습니다.
+  - `device`는 임베딩 모델이 실제로 돌아가는 디바이스입니다 (`auto` 탐지 결과 또는 `cpu`, 엔진 로드
+    전에는 `null`) — 하드웨어 가속이 실제로 잡혔는지 확인하는 관측 필드입니다.
   - `lastUpdateAt`은 **서빙 중인 세대의 인덱스 마지막 기록 시각**입니다: 모든 아티팩트 작성 경로
     (호스트 03/06, 사이드카 틱·부트 리페어)가 수렴하는 `VectorIndex.save`가 `id_map.json`의
     `updated_at`(UTC ISO 8601)로 스탬프하고, 엔진 로드/스왑 시 그 값을 채택합니다. 따라서
@@ -259,6 +262,7 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
 ```python
 from lawcast_semantic import KoreanEmbedder, SemanticSearcher  # 공개 API (지연 로딩)
 
+# config.DEVICE 기본값 'auto' — 가속 하드웨어(CUDA/MPS/XPU) 자동 탐지, 없으면 cpu
 embedder = KoreanEmbedder()  # 기본값: config.MODEL_NAME / config.DEVICE
 searcher = SemanticSearcher.load(embedder)  # 기본 경로: config의 artifacts/*
 results = searcher.search('세입자 보호', k=5)  # 아티팩트 지문/모델 불일치 시 ValueError
@@ -268,8 +272,8 @@ expand_query('산안법 개정')  # QueryExpansion(text='산업안전보건법 �
 ```
 
 - **책임 분리**: `datasource`(데이터) / `preprocess`·`chunking`(전처리·청킹) / `embedding`(엔진) /
-  `indexing`(인덱스) / `aliases`(질의 약어 확장) / `search`(조회) / `evaluation`(지표) /
-  `incremental`(갱신) / `config`(설정) — 단방향 의존 DAG (`config` ← 각 모듈 ← `search`), 순환 없음.
+  `device`(디바이스 탐지) / `indexing`(인덱스) / `aliases`(질의 약어 확장) / `search`(조회) /
+  `evaluation`(지표) / `incremental`(갱신) / `config`(설정) — 단방향 의존 DAG (`config` ← 각 모듈 ← `search`), 순환 없음.
 - **상태 소유**: 공고 레코드 스키마·JSONL은 `datasource`, 청크 레코드 스키마·JSONL·지문은
   `chunking`, 모델 런타임은 `KoreanEmbedder`, 인덱스 런타임은 `VectorIndex`, 로드된 조회 상태
   (artifact 검증 포함)는 `SemanticSearcher`가 소유합니다.
@@ -325,7 +329,13 @@ expand_query('산안법 개정')  # QueryExpansion(text='산업안전보건법 �
 ### Stage 2 — 토크나이징 + 임베딩 추출
 
 - `KoreanEmbedder`가 설정된 모델 (기본 `nlpai-lab/KURE-v1`)을 sentence-transformers로 로드합니다.
-  디바이스·배치는 `LAWCAST_SEMANTIC_DEVICE` (기본 `cpu`) / `LAWCAST_SEMANTIC_BATCH`로 조절하세요.
+  디바이스·배치는 `LAWCAST_SEMANTIC_DEVICE` (기본 `auto`) / `LAWCAST_SEMANTIC_BATCH`로 조절하세요.
+  **`auto`는 모델 로드 시 CPU보다 우수한 연산 하드웨어를 탐지해 사용합니다** (CUDA > Apple MPS >
+  Intel XPU 순으로, `lawcast_semantic/device.py`가 단일 소유): 없으면 `cpu`로 동일하게 동작합니다.
+  `cpu`·`cuda`·`cuda:0`·`mps` 같은 구체적 값으로 고정할 수 있으며, 탐지·고정한 디바이스가 구동 중
+  실패하면 (커널 미지원, 비유한 값 등) 경고 로그 후 `cpu`로 강등되어 파이프라인이 중단되지 않습니다.
+  디바이스는 벡터 의미를 바꾸지 않으므로 디바이스가 바뀌어도 기존 아티팩트는 그대로 유효합니다.
+  실제 사용 디바이스는 stage 2 출력의 `device` 줄과 사이드카 `/health.device`로 확인합니다.
 - **임베딩 입력 구성**: 공고 제목을 컨텍스트 프리픽스로 결합합니다 (`"{제목}\n{본문}"`). 제목에만
   등장하는 어휘 (예: "공급망 안정화")가 벡터에 반영되어 제목 어휘 질의가 매칭됩니다.
   (`compose_embedding_text`가 단일 소스이며 청크 지문도 동일 입력 기준으로 해싱)

@@ -225,9 +225,10 @@ def test_real_engine_serves_concurrent_queries():
     Spawns the sidecar as a separate process (like Docker), waits for the
     engine to become ready, then measures three rounds of (sequential
     baseline, concurrent batch) on the warm process. Every batch must fully
-    succeed and the MEDIAN round must finish faster than its sequential sum —
-    a serialized sidecar would take at least the sum every round (each
-    request waiting its turn), which a median cannot hide.
+    succeed, and no request may finish at its uncontended single-query
+    speed — a serialized sidecar lets the FIRST request do exactly that
+    while the last waits for the others (queue signature), whereas genuine
+    overlap keeps every member several times slower than its baseline.
     """
     queries = [
         '세입자 보호',
@@ -327,17 +328,23 @@ def test_real_engine_serves_concurrent_queries():
             f'single={[round(latency, 2) for latency in item["single"]]} '
             f'concurrent={[round(latency, 2) for latency in item["latencies"]]}',
         )
+    ladder_min_over_max = [
+        round(min(item['latencies']) / max(item['latencies']), 2) for item in rounds
+    ]
     print(
         f'\n[real margin] indexedChunks={health["indexedChunks"]} model={health["model"]} '
         f'ratios={[round(ratio, 2) for ratio in ratios]} '
-        f'median_ratio={median_ratio:.2f} threshold=0.85 serialized=1.00',
+        f'median_ratio={median_ratio:.2f} '
+        f'ladder_min_over_max={ladder_min_over_max} '
+        'gate=(min_latency>=2x_single) lock_signature=1x_single',
     )
     # GIL vs lock: a lock held across search() would queue every request, so
     # the last one waits for ALL others — max/sum ~= 1.0 (and ratio ~= 1.0)
     # on any machine. Observed max far below the sum with per-request latency
-    # inflated ~3-4x means requests overlapped while slowing each other down:
-    # CPU/GIL contention, not a lock. Lock absence itself is proven directly
-    # by the stub tests (max_in_flight, health-under-search).
+    # inflated ~3.7x (cpu) to ~5.2x (mps) means requests overlapped while
+    # slowing each other down: CPU/GIL contention, not a lock. Lock absence
+    # itself is proven directly by the stub tests (max_in_flight,
+    # health-under-search).
     print(
         f'\n[real gil-vs-lock] inflation={[round(value, 1) for value in inflations]}x '
         f'median_max_over_sum={median_max_over_sum:.2f} (lock=1.00) '
@@ -347,14 +354,26 @@ def test_real_engine_serves_concurrent_queries():
         codes = [response.status_code for response in item['responses']]
         assert codes == [200] * len(queries), f'round {index}: {codes}'
         assert all(response.json()['results'] for response in item['responses'])
-    # Threshold rationale (measured 2026-10-04, 7 process runs): 21 single
-    # rounds span 0.61-0.75 and the 7 medians 0.65-0.69 (pre-recalibration
-    # single shots spanned 0.56-0.79: a cold round elevates the whole
-    # baseline, a load spike elevates one batch wall). 0.85 keeps >=0.10
-    # headroom over the worst round and >=0.16 over every median, while a
-    # serialized sidecar lands at ~1.0 — the threshold stays strictly
-    # between the two signatures.
-    assert median_ratio < 0.85
-    # The last request of the median round must not have waited for the others
-    # (a full queue pushes max latency to ~sequential_sum).
-    assert median_max_over_sum < 0.85
+    # Queue detection, load-normalized: a sidecar that serialized searches
+    # behind one lock releases them one by one, so the FIRST request finishes
+    # at its uncontended single-query speed (min(batch) ~= 1x single) while
+    # the last waits for all others. With genuine overlap nobody finishes
+    # fast — every request pays the shared GIL / accelerator queue — so the
+    # fastest batch member stays several times its own baseline: measured
+    # 3.1-5.5x across cpu and mps runs, idle and busy. Threshold 2.0 keeps
+    # >=1.5x headroom over the lowest honest observation and fires on the
+    # ~1x lock signature on any hardware or machine load.
+    #
+    # Wall/sum ratio gates (0.85, then 1.0) were removed after measuring
+    # them flake: honest rounds span 0.83-1.02 on a busy host while a
+    # serialized sidecar also lands at ~1.0 — a sub-second wall clock has no
+    # separating margin between the two signatures. Ratio stays a print-only
+    # diagnostic below, alongside the latency ladder (min/max).
+    for index, item in enumerate(rounds, start=1):
+        baseline = statistics.median(item['single'])
+        fastest = min(item['latencies'])
+        assert fastest >= 2.0 * baseline, (
+            f'round {index}: fastest request {fastest:.2f}s = '
+            f'{fastest / baseline:.1f}x its uncontended {baseline:.2f}s — '
+            'first-in-line speed implies queueing (search running under a lock?)'
+        )

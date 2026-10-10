@@ -90,7 +90,12 @@ ID_MAP_PATH = ARTIFACTS_DIR / 'id_map.json'
 # README for the model-selection rationale and comparison numbers.
 # Override with LAWCAST_SEMANTIC_MODEL to swap (e.g. jhgan/ko-sbert-sts).
 MODEL_NAME = os.environ.get('LAWCAST_SEMANTIC_MODEL', 'nlpai-lab/KURE-v1')
-DEVICE = os.environ.get('LAWCAST_SEMANTIC_DEVICE', 'cpu')
+# The *requested* embedding device: 'auto' (default) probes for hardware
+# faster than CPU (CUDA > Apple MPS > Intel XPU) at model-load time and
+# falls back to cpu — see lawcast_semantic/device.py, the single owner of
+# that resolution. Pin a concrete device (cpu / cuda / cuda:0 / mps / xpu)
+# to override the probe; an unavailable pin degrades to cpu with a warning.
+DEVICE = os.environ.get('LAWCAST_SEMANTIC_DEVICE', 'auto').strip() or 'auto'
 EMBED_BATCH_SIZE = int(os.environ.get('LAWCAST_SEMANTIC_BATCH', '32'))
 
 # Scheduled refresh gates (agent_memories/08-semantic-search-production-deploy/
