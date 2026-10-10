@@ -12,6 +12,22 @@ structure LawCast preserves in `proposalReason`). The char budget bounds the
 full embedding input (subject context + body, see `compose_embedding_text`),
 so the body budget shrinks by the subject length and every chunk stays inside
 the model token window regardless of title length.
+
+`CHUNK_MIN_CHARS` is a floor on what the packer ATTACHES, never a rule that
+discards text: a packed chunk below it is real content that did not fit beside
+its neighbours, so it is merged into the chunk in front of it rather than
+dropped (dropping it made that text unsearchable — see
+agent_memories/22-chunk-floor-content-loss/). Only that merge may exceed the
+char budget, by at most `min_chars` characters.
+
+Structural boilerplate is removed here, before any text reaches the embedder
+(`preprocess.split_section_header` / `preprocess.strip_item_marker`): section
+labels are captured as the chunk's `section` metadata instead of being embedded
+with the body, and enumeration markers (`가.`, `나)`, `①`) are dropped from line
+and sentence starts. Both are corpus-wide constants rather than content, so
+keeping them in the embedded text only adds tokens that make every chunk look
+alike; dropping them also frees that budget for real text and stops a marker's
+`.` from being read as a sentence boundary.
 """
 
 from __future__ import annotations
@@ -24,7 +40,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import config
-from .preprocess import detect_sections, normalize_text
+from .preprocess import (
+    detect_sections,
+    normalize_text,
+    strip_glued_prefixes,
+    strip_item_marker,
+)
 
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+|\n+')
 
@@ -119,6 +140,7 @@ def _pack_units(
     units: list[str],
     max_chars: int,
     overlap_chars: int,
+    min_chars: int,
 ) -> list[str]:
     """Greedily pack units into chunks, joining them with newlines.
 
@@ -126,17 +148,31 @@ def _pack_units(
     overlap_chars is reached, preserving cross-boundary context. The overlap
     carry is trimmed from the front when necessary so every chunk stays within
     max_chars even when the next unit is itself close to the limit.
+
+    A packed chunk below min_chars is merged into the chunk in front of it
+    instead of being emitted on its own. Such a chunk is a leftover that did not
+    fit beside its neighbour (a sentence tail from `_paragraph_units`, or the
+    last paragraph of a section after a full chunk), and it is content: emitting
+    it alone produced a context-free fragment, while dropping it — what the
+    pipeline used to do — removed the text from the index entirely. The merge
+    appends only the units that are not already there, so the repeated carry is
+    not duplicated; it exceeds max_chars by at most min_chars characters (the
+    fragment plus the newline that joins it), which is what the caller's budget
+    is calibrated to absorb.
     """
-    chunks: list[str] = []
+    chunks: list[tuple[str, list[str]]] = []  # (text, units that are new there)
     carry: list[str] = []  # trailing units of the previous chunk
     fresh: list[str] = []  # units appended on top of the carry
 
     def joined_length(parts: list[str]) -> int:
         return sum(len(part) for part in parts) + max(len(parts) - 1, 0)
 
+    def emit() -> None:
+        chunks.append(('\n'.join(carry + fresh), list(fresh)))
+
     for unit in units:
         if fresh and joined_length(carry + fresh + [unit]) > max_chars:
-            chunks.append('\n'.join(carry + fresh))
+            emit()
             previous = carry + fresh
             carry, carry_len = [], 0
             for part in reversed(previous):
@@ -151,8 +187,15 @@ def _pack_units(
             carry.pop(0)
         fresh.append(unit)
     if fresh:
-        chunks.append('\n'.join(carry + fresh))
-    return chunks
+        emit()
+
+    merged: list[str] = []
+    for text, new_units in chunks:
+        if merged and len(text) < min_chars:
+            merged[-1] = f'{merged[-1]}\n{"\n".join(new_units)}'
+        else:
+            merged.append(text)
+    return merged
 
 
 def chunk_notice(
@@ -168,7 +211,10 @@ def chunk_notice(
 
     `max_chars` bounds the composed embedding input (subject + body): the body
     budget shrinks by the subject context length so title length cannot push a
-    chunk past the model token window.
+    chunk past the model token window. `min_chars` is a floor the packer works
+    against, not a filter: every unit of text reaches exactly one chunk (a
+    below-floor leftover is merged into the chunk in front of it, see
+    `_pack_units`).
     """
     notice_num = int(notice['notice_num'])
     subject = (notice.get('subject') or '').strip()
@@ -187,12 +233,22 @@ def chunk_notice(
     for section_name, body in sections:
         units: list[str] = []
         for paragraph in body.split('\n'):
-            if paragraph.strip():
-                units.extend(_paragraph_units(paragraph.strip(), body_budget))
-        for text in _pack_units(units, body_budget, overlap_chars):
-            if len(text) < min_chars and chunks:
-                # Drop tiny trailing fragments once the notice has real chunks.
+            if not paragraph.strip():
                 continue
+            # Two passes over the paragraph text, before any packing:
+            #   1. a line-leading marker ("가. 협회의 업무"); dropping it also
+            #      stops its '.' from splitting the line into a one-token
+            #      sentence ("가."),
+            #   2. markers/labels glued to a preceding sentence end, which are
+            #      invisible to the line-level pass.
+            # Doing (2) here rather than per packed unit matters: a unit starts
+            # at a sentence the packer chose, so a prefix would survive whenever
+            # it got grouped with the sentence in front of it.
+            cleaned_paragraph = strip_glued_prefixes(strip_item_marker(paragraph.strip())).strip()
+            if not cleaned_paragraph:
+                continue
+            units.extend(_paragraph_units(cleaned_paragraph, body_budget))
+        for text in _pack_units(units, body_budget, overlap_chars, min_chars):
             chunks.append(
                 Chunk(
                     chunk_id=f'{notice_num}-{chunk_index:04d}',
@@ -209,7 +265,12 @@ def chunk_notice(
             chunk_index += 1
 
     if not chunks:
-        fallback_text = f'{subject}\n{normalized}'.strip()
+        fallback_body = '\n'.join(
+            cleaned
+            for line in normalized.split('\n')
+            if (cleaned := strip_item_marker(line.strip()))
+        )
+        fallback_text = f'{subject}\n{fallback_body}'.strip()
         chunks.append(
             Chunk(
                 chunk_id=f'{notice_num}-{chunk_index:04d}',

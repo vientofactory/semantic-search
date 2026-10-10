@@ -20,8 +20,11 @@ from importlib import import_module
 
 # Public API: attribute name -> defining submodule (loaded on first access).
 _EXPORTS = {
+    'ALIASES': '.aliases',
     'Chunk': '.chunking',
+    'QueryExpansion': '.aliases',
     'chunk_notices': '.chunking',
+    'expand_query': '.aliases',
     'KoreanEmbedder': '.embedding',
     'VectorIndex': '.indexing',
     'detect_sections': '.preprocess',
