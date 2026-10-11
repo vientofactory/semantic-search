@@ -15,11 +15,18 @@ MEDIUM_REASON = '법' * 600  # 401-1200 chars
 SHORT_REASON = '법' * 100  # 80-400 chars
 
 
-def make_db(tmp_path: Path, rows: list[tuple]) -> Path:
-    """Create a temp DB with the notice_archives columns the datasource touches.
+def make_db(
+    tmp_path: Path,
+    rows: list[tuple],
+    summaries: dict[int, str] | None = None,
+) -> Path:
+    """Create a temp DB with the columns the datasource touches.
 
     `source_html` is included to prove the datasource reads `proposalReason`
-    only — HTML snapshots never enter the learning corpus.
+    only — HTML snapshots never enter the learning corpus. The 1:1
+    `notice_archive_snapshot_states` table is created too (it is where the
+    generated summary lives); `summaries` maps noticeNum -> ai_summary and a
+    notice without an entry has no summary row at all.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     db_path = tmp_path / 'lawcast.db'
@@ -39,6 +46,15 @@ def make_db(tmp_path: Path, rows: list[tuple]) -> Path:
         'VALUES (?, ?, ?, ?, ?, ?)',
         rows,
     )
+    connection.execute(
+        'CREATE TABLE notice_archive_snapshot_states ('
+        'notice_num integer PRIMARY KEY, '
+        'ai_summary text)'
+    )
+    connection.executemany(
+        'INSERT INTO notice_archive_snapshot_states (notice_num, ai_summary) VALUES (?, ?)',
+        list((summaries or {}).items()),
+    )
     connection.commit()
     connection.close()
     return db_path
@@ -57,6 +73,7 @@ def test_load_notices_from_db_reads_proposal_reason_as_learning_text(tmp_path: P
             'proposer_category': '의원',
             'committee': '교육위원회',
             'proposal_reason': '제안이유\n본문 내용',
+            'ai_summary': '',
         }
     ]
 
@@ -82,10 +99,28 @@ def test_load_notices_from_db_handles_empty_values_and_empty_db(tmp_path: Path):
             'proposer_category': '',
             'committee': '',
             'proposal_reason': '',
+            'ai_summary': '',
         }
     ]
     empty_db = make_db(tmp_path / 'empty', [])
     assert load_notices_from_db(empty_db) == []
+
+
+def test_load_notices_from_db_joins_the_generated_summary(tmp_path: Path):
+    """The Ollama summary is joined in 1:1; a notice without a row yields ''."""
+    db_path = make_db(
+        tmp_path,
+        [
+            (1, '법안', '의원', '위원회', '제안이유 본문', None),
+            (2, '다른법안', '의원', '위원회', '제안이유 본문', None),
+        ],
+        summaries={1: '이 법안은 국민의 권익을 보호하려는 개정안입니다.'},
+    )
+    by_num = {record['notice_num']: record for record in load_notices_from_db(db_path)}
+    assert by_num[1]['ai_summary'] == '이 법안은 국민의 권익을 보호하려는 개정안입니다.'
+    assert by_num[2]['ai_summary'] == ''
+    # The summary is an addition: the learning text is still proposalReason.
+    assert by_num[1]['proposal_reason'] == '제안이유 본문'
 
 
 def test_extract_sample_stratifies_by_proposal_reason_length(tmp_path: Path):

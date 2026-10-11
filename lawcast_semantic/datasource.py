@@ -7,8 +7,15 @@ that touches the database, and it deliberately extracts no text from HTML —
 `source_html` snapshots are never read and no page scraping happens here.
 Text cleaning is the preprocessing stage's job (see `preprocess.py`).
 
+One extra column is read from a sibling table: the Ollama-generated summary
+(`notice_archive_snapshot_states.ai_summary`), a plain-Korean restatement of
+the same notice whose wording is what a citizen query tends to resemble. It is
+an enrichment, not the learning text: it is carried as `ai_summary` and only
+`chunking.py` decides how it enters the index. The join is on `notice_num`
+(1:1); a row without a summary yields an empty string.
+
 Canonical record schema consumed by every later stage:
-    notice_num, subject, proposer_category, committee, proposal_reason
+    notice_num, subject, proposer_category, committee, proposal_reason, ai_summary
 
 Two access paths produce the same records:
   - `load_notices_from_db` / `extract_sample`: straight from `notice_archives`
@@ -22,9 +29,19 @@ import json
 import sqlite3
 from pathlib import Path
 
-# The learning text is `proposalReason` exactly as stored. No other column
-# (including `source_html`) is part of the embedding corpus.
-NOTICE_SELECT_COLUMNS = 'noticeNum, subject, proposerCategory, committee, proposalReason'
+# The learning text is `proposalReason` exactly as stored. No other
+# `notice_archives` column (including `source_html`) is part of the embedding
+# corpus; the only extra column is the pre-generated summary, which lives in
+# `notice_archive_snapshot_states` (1:1 on `notice_num`) and defaults to ''.
+NOTICE_SELECT_COLUMNS = (
+    'notice_archives.noticeNum, notice_archives.subject, '
+    'notice_archives.proposerCategory, notice_archives.committee, '
+    "notice_archives.proposalReason, COALESCE(summary.ai_summary, '')"
+)
+NOTICE_FROM = (
+    'notice_archives LEFT JOIN notice_archive_snapshot_states AS summary '
+    'ON summary.notice_num = notice_archives.noticeNum'
+)
 
 # Stratified sampling by proposalReason length so chunking is exercised across
 # short/medium/long notices (SQLite `length()` counts characters for TEXT).
@@ -37,13 +54,14 @@ LENGTH_BUCKETS = {
 
 def record_from_row(row: tuple) -> dict:
     """Map one `notice_archives` row to the canonical notice record."""
-    notice_num, subject, proposer_category, committee, proposal_reason = row
+    notice_num, subject, proposer_category, committee, proposal_reason, ai_summary = row
     return {
         'notice_num': int(notice_num),
         'subject': subject or '',
         'proposer_category': proposer_category or '',
         'committee': committee or '',
         'proposal_reason': proposal_reason or '',
+        'ai_summary': ai_summary or '',
     }
 
 
@@ -58,11 +76,13 @@ def load_notices_from_db(
 
     `where` is a raw SQL condition over `notice_archives` (same style as
     LENGTH_BUCKETS), `limit` caps rows after `order`. The record text is the
-    stored `proposalReason` value — no HTML parsing or text extraction.
+    stored `proposalReason` value — no HTML parsing or text extraction. The
+    generated summary is joined in from `notice_archive_snapshot_states` and
+    is empty for a notice that has none (the two tables are 1:1).
     """
     connection = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
     try:
-        query = f'SELECT {NOTICE_SELECT_COLUMNS} FROM notice_archives'
+        query = f'SELECT {NOTICE_SELECT_COLUMNS} FROM {NOTICE_FROM}'
         params: list = []
         if where:
             query += f' WHERE {where}'

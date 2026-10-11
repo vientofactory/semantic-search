@@ -3,6 +3,7 @@
 import pytest
 
 from lawcast_semantic.chunking import (
+    SUMMARY_SECTION,
     chunk_notice,
     chunk_notices,
     compose_embedding_text,
@@ -126,6 +127,62 @@ def test_empty_proposal_reason_falls_back_to_subject():
     chunks = chunk_notice(make_notice(''))
     assert len(chunks) == 1
     assert '테스트법' in chunks[0].text
+
+
+def test_ai_summary_is_an_extra_trailing_section():
+    """The generated summary is indexed as its own section, after the body."""
+    notice = make_notice('제안이유\n본문 내용임.')
+    notice['ai_summary'] = '이 법안은 국민의 권익을 보호하려는 개정안입니다.'
+    chunks = chunk_notice(notice)
+    assert [chunk.section for chunk in chunks] == ['제안이유', SUMMARY_SECTION]
+    assert chunks[-1].text == '이 법안은 국민의 권익을 보호하려는 개정안입니다.'
+    # The body chunk is untouched: same id, same text, same index.
+    plain = chunk_notice(make_notice('제안이유\n본문 내용임.'))
+    assert [chunk.chunk_id for chunk in chunks[: len(plain)]] == [chunk.chunk_id for chunk in plain]
+    assert [chunk.text for chunk in chunks[: len(plain)]] == [chunk.text for chunk in plain]
+
+
+def test_ai_summary_is_absent_when_the_notice_has_none():
+    """JSONL snapshots predate the field and notices without a summary join to ''."""
+    notice = make_notice('제안이유\n본문 내용임.')
+    assert {chunk.section for chunk in chunk_notice(notice)} == {'제안이유'}
+    notice['ai_summary'] = '   '
+    assert {chunk.section for chunk in chunk_notice(notice)} == {'제안이유'}
+
+
+def test_summary_on_an_empty_reason_notice_keeps_the_title_chunk():
+    """An empty `proposalReason` keeps its subject-only chunk and gains a summary.
+
+    The subject chunk is the notice's exact-title representation (its embedding
+    input is the bare subject). Replacing it with the summary cost title queries
+    their score-1.0 hit on 405 empty-reason notices, so the two are additive.
+    """
+    notice = make_notice('')
+    notice['ai_summary'] = '이 법안은 국민의 권익을 보호하려는 개정안입니다.'
+    chunks = chunk_notice(notice)
+    assert [chunk.section for chunk in chunks] == ['body', SUMMARY_SECTION]
+    title, summary_chunk = chunks
+    assert title.text == '테스트법 일부개정법률안'
+    assert compose_embedding_text(title.subject, title.text) == '테스트법 일부개정법률안'
+    assert '국민의 권익을 보호' in summary_chunk.text
+    # The title chunk is byte-identical to the fallback chunk of the same notice
+    # without a summary, so its stored vector is reused instead of re-embedded.
+    fallback = chunk_notice(make_notice(''))
+    assert [chunk.text for chunk in fallback] == [title.text]
+
+
+def test_summary_respects_the_body_budget():
+    """The summary is packed by the same char budget as any body section."""
+    notice = make_notice('본문 내용임.')
+    notice['ai_summary'] = ' '.join(f'요약 문장 {index} 이다.' for index in range(60))
+    chunks = chunk_notice(notice, max_chars=120, overlap_chars=30, min_chars=40)
+    summary_chunks = [chunk for chunk in chunks if chunk.section == SUMMARY_SECTION]
+    assert len(summary_chunks) > 1
+    limit = 120 + 40  # max_chars plus the merge allowance
+    assert all(chunk.char_count <= limit for chunk in summary_chunks)
+    assert all(
+        len(compose_embedding_text(chunk.subject, chunk.text)) <= limit for chunk in summary_chunks
+    )
 
 
 def test_chunk_notices_covers_all_notices():
