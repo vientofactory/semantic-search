@@ -27,6 +27,17 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVE_TIMEOUT = 15.0
 
+# The sidecar request bounds are env-injectable (lawcast_semantic/config.py),
+# and several HTTP contract tests assert the code defaults (500-char query,
+# k <= 200). Pop any shell export before any test module imports
+# `service.app`, so a developer's environment can never shift them.
+for _bound_env in (
+    'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH',
+    'LAWCAST_SEMANTIC_MAX_K',
+    'LAWCAST_SEMANTIC_DEFAULT_K',
+):
+    os.environ.pop(_bound_env, None)
+
 sys.path.insert(0, str(PROJECT_ROOT))
 
 

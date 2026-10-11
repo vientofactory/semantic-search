@@ -17,9 +17,15 @@ Usage:
 
 Task JSON:
   {
-    "notices": [<notice record>...],             # indexed with the stub embedder
+    "notices": [<notice record>...],             # chunked with the real chunker
+    "chunks": [<chunk record>...],               # OR index this chunk set verbatim
     "probes": [{"label": str, "query": str, "notice_num": int}]
   }
+
+Exactly one of `notices` / `chunks` is given: `notices` go through the real
+stage-1 chunker, while `chunks` indexes a set built another way — a gate
+comparing two chunking rules has to put both sets through the same search path
+(see tests/test_capability_gate.py).
 
 Output: one line per probe, `RESULT ` followed by `{"label", "notice_num",
 "notice_order", "hit_count", "hits"}`. `hits` is the ranked window (bounded by
@@ -87,9 +93,8 @@ class HashingEmbedder:
         return np.stack([self._vector(text) for text in texts])
 
 
-def build_artifacts(artifacts_dir: Path, notices: list[dict], embedder) -> list[dict]:
-    """Write chunks.jsonl + faiss.index + id_map.json for these notices."""
-    records = [chunk.to_dict() for notice in notices for chunk in chunk_notice(notice)]
+def build_artifacts(artifacts_dir: Path, records: list[dict], embedder) -> list[dict]:
+    """Write chunks.jsonl + faiss.index + id_map.json for these chunk records."""
     index = VectorIndex(embedder.dimension)
     index.build(
         embedder.embed_texts(
@@ -121,8 +126,14 @@ def main() -> None:
     task = json.loads(Path(arguments.task).read_text(encoding='utf-8'))
     embedder = HashingEmbedder()
     notices = task.get('notices') or []
-    assert notices, 'the task carries no notices to index'
-    records = build_artifacts(artifacts_dir, notices, embedder)
+    records = task.get('chunks')
+    assert not (records and notices), 'the task carries both notices and chunks'
+    if records is None:
+        assert notices, 'the task carries no notices to index'
+        records = [chunk.to_dict() for notice in notices for chunk in chunk_notice(notice)]
+    else:
+        assert records, 'the task carries an empty chunk list'
+    records = build_artifacts(artifacts_dir, records, embedder)
 
     searcher = SemanticSearcher.load(
         embedder,
@@ -130,7 +141,8 @@ def main() -> None:
         index_path=artifacts_dir / 'faiss.index',
         id_map_path=artifacts_dir / 'id_map.json',
     )
-    print(f'INDEXED {len(records)} chunks from {len(notices)} notices', flush=True)
+    source = f'{len(notices)} notices' if notices else 'an explicit chunk set'
+    print(f'INDEXED {len(records)} chunks from {source}', flush=True)
 
     for probe in task['probes']:
         results = searcher.search(probe['query'], k=arguments.k)

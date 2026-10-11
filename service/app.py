@@ -48,14 +48,17 @@ if not service_logger.handlers:
 # None (default) means no repair capability, matching pre-design behavior.
 BootRepairHook = Callable[[Any, Path], bool]
 
-MAX_QUERY_LENGTH = 500
+# Request bounds are owned by lawcast_semantic.config (env-injectable via
+# LAWCAST_SEMANTIC_MAX_QUERY_LENGTH / _MAX_K / _DEFAULT_K); re-exported here
+# so the wire contract and tests keep a single import site.
+MAX_QUERY_LENGTH = config.MAX_QUERY_LENGTH
 # `/search` k counts CHUNKS, not notices: the backend over-requests chunks so
-# chunk->notice dedup can still fill its notice-level k. Must match
-# SIDE_CAR_MAX_CHUNK_K in
+# chunk->notice dedup can still fill its notice-level k. The default must
+# match SIDE_CAR_MAX_CHUNK_K in
 # backend/src/modules/semantic-search/semantic-search.constants.ts (pinned by
 # the contract test there).
-MAX_K = 200
-DEFAULT_K = 5
+MAX_K = config.MAX_K
+DEFAULT_K = config.DEFAULT_K
 
 
 class EngineState:
@@ -350,6 +353,12 @@ def health() -> dict:
         'lastUpdateTriggeredAt': snapshot['lastUpdateTriggeredAt'],
         'updating': snapshot['updating'],
         'generation': snapshot['generation'],
+        # Chunk-window cap this sidecar enforces on `/search` (unit: chunks,
+        # not notices). The backend reads it here instead of hardcoding the
+        # cap, so changing LAWCAST_SEMANTIC_MAX_K only needs a sidecar
+        # restart — the field name is pinned against the backend's
+        # SemanticSidecarHealthResponse by the contract spec there.
+        'maxK': config.MAX_K,
     }
 
 

@@ -6,6 +6,7 @@ the REAL `load_engine` with fakes for the lazy model exports (design §6.1).
 """
 
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -98,17 +99,63 @@ def test_search_passes_weak_results_through_separately(client):
 
 
 def test_search_rejects_blank_and_overlong_query(client):
+    import service.app as app_module
+
+    limit = app_module.config.MAX_QUERY_LENGTH
     assert client.get('/search', params={'query': '   '}).status_code == 400
     assert client.get('/search', params={'query': ''}).status_code in (400, 422)
-    assert client.get('/search', params={'query': 'x' * 501}).status_code == 422
+    # Bounds come from config (env-injectable), so the boundary is asserted
+    # relative to it rather than against a duplicated literal.
+    assert client.get('/search', params={'query': 'x' * (limit + 1)}).status_code == 422
+    assert client.get('/search', params={'query': 'x' * limit}).status_code == 200
 
 
 def test_search_rejects_out_of_range_k(client):
+    import service.app as app_module
+
+    max_k = app_module.config.MAX_K
     assert client.get('/search', params={'query': '질의', 'k': 0}).status_code == 422
-    assert client.get('/search', params={'query': '질의', 'k': 201}).status_code == 422
+    assert client.get('/search', params={'query': '질의', 'k': max_k + 1}).status_code == 422
     # k is a chunk count: the backend over-requests up to MAX_K chunks so
-    # chunk->notice dedup can fill its notice-level k.
-    assert client.get('/search', params={'query': '질의', 'k': 150}).status_code == 200
+    # chunk->notice dedup can fill its notice-level k — so the cap itself is
+    # served, not rejected.
+    assert client.get('/search', params={'query': '질의', 'k': max_k}).status_code == 200
+
+
+def test_request_bounds_are_env_injectable():
+    """MAX_QUERY_LENGTH / MAX_K / DEFAULT_K are owned by config.py, so an
+    operator injects them through the environment (LAWCAST_SEMANTIC_*). The
+    FastAPI route bounds must follow the injected values, not the defaults."""
+    code = (
+        'from fastapi.testclient import TestClient\n'
+        'import service.app as a\n'
+        'assert (a.MAX_QUERY_LENGTH, a.MAX_K, a.DEFAULT_K) == (120, 33, 7), '
+        '(a.MAX_QUERY_LENGTH, a.MAX_K, a.DEFAULT_K)\n'
+        'client = TestClient(a.app)\n'
+        '# The injected cap reaches the wire, not just the module constants.\n'
+        "assert client.get('/health').json()['maxK'] == 33\n"
+        '# Validation runs before the handler: above the injected caps -> 422.\n'
+        "assert client.get('/search', params={'query': 'x' * 121}).status_code == 422\n"
+        "assert client.get('/search', params={'query': 'x', 'k': 34}).status_code == 422\n"
+        '# At the caps the request passes validation and reaches the engine,\n'
+        '# which is still loading in this stub -> 503, not 422.\n'
+        "assert client.get('/search', params={'query': 'x' * 120, 'k': 33}).status_code == 503\n"
+    )
+    env = {
+        **os.environ,
+        'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH': '120',
+        'LAWCAST_SEMANTIC_MAX_K': '33',
+        'LAWCAST_SEMANTIC_DEFAULT_K': '7',
+    }
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_search_reports_engine_failure_as_503(monkeypatch):
@@ -143,6 +190,8 @@ def test_search_reports_loading_state_as_503(monkeypatch):
 
 
 def test_health_shape(client):
+    from lawcast_semantic import config
+
     health = client.get('/health').json()
     assert health['status'] == 'ready'
     assert health['model'] == 'stub-model'
@@ -151,6 +200,10 @@ def test_health_shape(client):
     assert health['error'] is None
     assert health['updating'] is False  # no tick has run yet
     assert health['lastUpdateTriggeredAt'] is None
+    # The chunk-window cap is reported so the backend follows config (and
+    # therefore the env-injected LAWCAST_SEMANTIC_MAX_K) instead of a
+    # compiled-in constant.
+    assert health['maxK'] == config.MAX_K
 
 
 def test_health_exposes_tick_progress(client):

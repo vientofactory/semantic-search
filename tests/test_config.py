@@ -26,6 +26,9 @@ STRIPPED_ENV = {
     'LAWCAST_SEMANTIC_MODEL',
     'LAWCAST_SEMANTIC_MIN_SIMILARITY',
     'LAWCAST_SEMANTIC_CLEAR_SIMILARITY',
+    'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH',
+    'LAWCAST_SEMANTIC_MAX_K',
+    'LAWCAST_SEMANTIC_DEFAULT_K',
 }
 
 
@@ -112,13 +115,12 @@ def test_similarity_tier_env_overrides():
     assert lines == ['0.3', '0.6']
 
 
-def test_min_similarity_above_clear_fails_fast():
-    """A floor above the clear threshold would silently invert the tiers,
-    so the config refuses to import instead."""
+def run_config_failure(**env_overrides: str) -> str:
+    """Import the config with invalid settings; it must refuse instead of
+    serving a silently wrong surface. Returns stderr for message assertions."""
     env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV}
     env[ENV_FILE_ENV] = ''
-    env['LAWCAST_SEMANTIC_MIN_SIMILARITY'] = '0.6'
-    env['LAWCAST_SEMANTIC_CLEAR_SIMILARITY'] = '0.3'
+    env.update(env_overrides)
     result = subprocess.run(
         [sys.executable, '-c', 'import lawcast_semantic.config'],
         capture_output=True,
@@ -127,8 +129,66 @@ def test_min_similarity_above_clear_fails_fast():
         cwd=PROJECT_ROOT,
         env=env,
     )
-    assert result.returncode != 0
-    assert 'MIN_SIMILARITY must be <=' in result.stderr
+    assert result.returncode != 0, 'config imported despite invalid settings'
+    return result.stderr
+
+
+def test_min_similarity_above_clear_fails_fast():
+    """A floor above the clear threshold would silently invert the tiers,
+    so the config refuses to import instead."""
+    stderr = run_config_failure(
+        LAWCAST_SEMANTIC_MIN_SIMILARITY='0.6',
+        LAWCAST_SEMANTIC_CLEAR_SIMILARITY='0.3',
+    )
+    assert 'MIN_SIMILARITY must be <=' in stderr
+
+
+def test_sidecar_request_bounds_default_to_the_wire_contract_values():
+    """The sidecar's `/search` bounds live here (env-injectable); the code
+    defaults are the pinned wire contract: query <= 500 chars, chunk window
+    1..200 defaulting to 5 (MAX_K's default is pinned against the backend's
+    SIDE_CAR_MAX_CHUNK_K by the cross-language contract spec)."""
+    lines = run_config('MAX_QUERY_LENGTH', 'MAX_K', 'DEFAULT_K')
+    assert lines == ['500', '200', '5']
+
+
+def test_sidecar_request_bounds_env_overrides():
+    """Operators can tune the API surface without a code change."""
+    lines = run_config(
+        'MAX_QUERY_LENGTH',
+        'MAX_K',
+        'DEFAULT_K',
+        env_overrides={
+            'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH': '120',
+            'LAWCAST_SEMANTIC_MAX_K': '33',
+            'LAWCAST_SEMANTIC_DEFAULT_K': '10',
+        },
+    )
+    assert lines == ['120', '33', '10']
+
+
+def test_default_k_above_max_k_fails_fast():
+    """A default window wider than the cap would make `/search` reject its
+    own default, so the config refuses to import instead."""
+    stderr = run_config_failure(LAWCAST_SEMANTIC_MAX_K='3', LAWCAST_SEMANTIC_DEFAULT_K='5')
+    assert 'LAWCAST_SEMANTIC_DEFAULT_K must be between 1 and LAWCAST_SEMANTIC_MAX_K' in stderr
+
+
+def test_non_positive_request_bounds_fail_fast():
+    """Zero/negative caps would reject every possible request."""
+    stderr = run_config_failure(LAWCAST_SEMANTIC_MAX_K='0')
+    assert 'LAWCAST_SEMANTIC_MAX_K must be >= 1' in stderr
+    stderr = run_config_failure(LAWCAST_SEMANTIC_MAX_QUERY_LENGTH='0')
+    assert 'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH must be >= 1' in stderr
+    stderr = run_config_failure(LAWCAST_SEMANTIC_DEFAULT_K='0')
+    assert 'LAWCAST_SEMANTIC_DEFAULT_K must be between 1 and LAWCAST_SEMANTIC_MAX_K' in stderr
+
+
+def test_non_integer_request_bound_fails_fast():
+    """A typo in an int env var must not collapse into a confusing failure
+    inside FastAPI — the offending variable is named at import time."""
+    stderr = run_config_failure(LAWCAST_SEMANTIC_MAX_K='many')
+    assert 'LAWCAST_SEMANTIC_MAX_K' in stderr
 
 
 def test_refresh_db_path_and_cron_env_overrides():

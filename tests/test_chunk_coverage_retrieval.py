@@ -121,12 +121,21 @@ def control_probes() -> list[dict]:
     return probes
 
 
-def run_probe(artifacts_dir: Path, probes: list[dict]) -> dict[str, dict]:
-    """Index the fixture notices out of process and answer every probe there.
+def run_probe(
+    artifacts_dir: Path,
+    probes: list[dict],
+    *,
+    notices: list[dict] | None = None,
+    chunks: list[dict] | None = None,
+) -> dict[str, dict]:
+    """Index a notice (or chunk) set out of process and answer every probe there.
 
-    Returns probe results keyed by label. One probe process serves the whole
-    module (the index is built once), and its stdout is parsed strictly: a probe
-    that cannot answer is a failure of this guard, not a skip.
+    Defaults to this module's fixture notices. `chunks` indexes an explicit
+    chunk set instead, so a gate can put a rule VARIANT through the same search
+    path (tests/test_capability_gate.py). Returns probe results keyed by label.
+    One probe process serves the whole module (the index is built once), and its
+    stdout is parsed strictly: a probe that cannot answer is a failure of this
+    guard, not a skip.
     """
     assert len({probe['label'] for probe in probes}) == len(probes), (
         'probe labels must be unique: results are keyed by label, so a collision would hand '
@@ -134,10 +143,11 @@ def run_probe(artifacts_dir: Path, probes: list[dict]) -> dict[str, dict]:
     )
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     task_path = artifacts_dir.parent / 'retrieval-task.json'
-    task_path.write_text(
-        json.dumps({'notices': FIXTURE_NOTICES, 'probes': probes}, ensure_ascii=False),
-        encoding='utf-8',
-    )
+    task: dict = {'notices': FIXTURE_NOTICES if notices is None else notices}
+    if chunks is not None:
+        task = {'chunks': chunks}
+    task['probes'] = probes
+    task_path.write_text(json.dumps(task, ensure_ascii=False), encoding='utf-8')
     completed = subprocess.run(
         [
             sys.executable,

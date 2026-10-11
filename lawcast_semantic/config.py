@@ -149,3 +149,26 @@ if MIN_SIMILARITY > CLEAR_SIMILARITY:
 CHUNK_MAX_CHARS = 200
 CHUNK_OVERLAP_CHARS = 50
 CHUNK_MIN_CHARS = 40
+
+# HTTP sidecar request bounds for `GET /search` (service/app.py),
+# env-injectable so operators can tune the API surface without a code change:
+# - MAX_QUERY_LENGTH: maximum query characters (422 above it).
+# - MAX_K: window cap where `k` counts CHUNKS, not notices — the backend
+#   over-requests chunks so chunk->notice dedup can still fill its
+#   notice-level k. The DEFAULT is pinned against the backend's
+#   SIDE_CAR_MAX_CHUNK_K by
+#   backend/src/modules/semantic-search/semantic-search.contract.spec.ts,
+#   so changing it here requires changing that constant in the same commit.
+# - DEFAULT_K: window served when the caller omits `k`.
+MAX_QUERY_LENGTH = int(os.environ.get('LAWCAST_SEMANTIC_MAX_QUERY_LENGTH', '500'))
+MAX_K = int(os.environ.get('LAWCAST_SEMANTIC_MAX_K', '200'))
+DEFAULT_K = int(os.environ.get('LAWCAST_SEMANTIC_DEFAULT_K', '5'))
+if MAX_QUERY_LENGTH < 1:
+    raise ValueError(f'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH must be >= 1 (got {MAX_QUERY_LENGTH})')
+if MAX_K < 1:
+    raise ValueError(f'LAWCAST_SEMANTIC_MAX_K must be >= 1 (got {MAX_K})')
+if not 1 <= DEFAULT_K <= MAX_K:
+    raise ValueError(
+        'LAWCAST_SEMANTIC_DEFAULT_K must be between 1 and LAWCAST_SEMANTIC_MAX_K '
+        f'(got {DEFAULT_K}, max {MAX_K})'
+    )

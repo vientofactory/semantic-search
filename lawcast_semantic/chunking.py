@@ -13,6 +13,15 @@ full embedding input (subject context + body, see `compose_embedding_text`),
 so the body budget shrinks by the subject length and every chunk stays inside
 the model token window regardless of title length.
 
+The notice's pre-generated summary (`ai_summary`, see `datasource.py`) is
+treated as one more section and appended to the notice's chunk list as
+`SUMMARY_SECTION`, packed by exactly the same rules as a body section. It is a
+distilled plain-Korean restatement of the same bill, so its vocabulary is much
+closer to a citizen query than the legal prose of `proposalReason` — indexing
+it makes that wording searchable instead of only the wording a drafter used. It
+is appended LAST so every existing body chunk keeps its id and text (and the
+incremental update therefore re-embeds only the summary rows).
+
 `CHUNK_MIN_CHARS` is a floor on what the packer ATTACHES, never a rule that
 discards text: a packed chunk below it is real content that did not fit beside
 its neighbours, so it is merged into the chunk in front of it rather than
@@ -48,6 +57,11 @@ from .preprocess import (
 )
 
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+|\n+')
+
+# `section` value carried by the chunk built from a notice's generated summary.
+# It names the summary's origin rather than a `proposalReason` heading, and it
+# is what the UI renders in its section chip.
+SUMMARY_SECTION = 'AI 요약'
 
 
 @dataclass
@@ -204,10 +218,12 @@ def chunk_notice(
     overlap_chars: int = config.CHUNK_OVERLAP_CHARS,
     min_chars: int = config.CHUNK_MIN_CHARS,
 ) -> list[Chunk]:
-    """Chunk a single notice record (dict with notice_num/subject/committee/proposal_reason).
+    """Chunk a single notice record (notice_num/subject/committee/proposal_reason/ai_summary).
 
     Notices with an empty `proposal_reason` fall back to a single chunk built
-    from the subject so every notice stays searchable.
+    from the subject so every notice stays searchable. A non-empty `ai_summary`
+    adds one `SUMMARY_SECTION` section (see the module docstring) — its body is
+    packed against the same budget as any other section.
 
     `max_chars` bounds the composed embedding input (subject + body): the body
     budget shrinks by the subject context length so title length cannot push a
@@ -222,6 +238,21 @@ def chunk_notice(
 
     normalized = normalize_text(notice.get('proposal_reason'))
     sections = detect_sections(normalized) if normalized else []
+    # The generated summary is appended as a trailing section, never a leading
+    # one: chunk ids are positional, so putting it first would renumber every
+    # body chunk and invalidate the whole index instead of just adding rows.
+    summary = normalize_text(notice.get('ai_summary'))
+    if summary:
+        if not sections:
+            # `proposal_reason` contributes no section at all (empty, or a bare
+            # label that cleans away). Without a summary such a notice fell back
+            # to a subject-only chunk; keep that chunk AND add the summary. The
+            # subject chunk is an exact title match by construction, and taking
+            # it away to make room for the summary cost title queries their
+            # score-1.0 hit (measured on 405 empty-reason notices), so the two
+            # representations are additive, never a swap.
+            sections = [('body', subject)]
+        sections = [*sections, (SUMMARY_SECTION, summary)]
 
     # The subject is prepended as embedding context, spending part of the
     # char budget that keeps chunks inside the model window.
