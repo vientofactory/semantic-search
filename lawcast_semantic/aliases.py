@@ -1,9 +1,10 @@
 """Stage 4a: query-side citizen alias expansion.
 
 Citizens refer to bills by syllable-initial acronyms and short forms that never
-appear in `proposalReason` or in `subject` (중처법, 산안법, 전상법, ...). The
-embedding therefore has no surface form to match and retrieval returns either
-nothing or a near-namesake — measured: 중처법 MISS, 산안법 MISS, 전상법 rank 154,
+appear in `proposalReason` or in `subject` (`중처법`, `산안법`, `전상법`, ...).
+The embedding therefore has no surface form to match and retrieval returns
+either nothing or a near-namesake — measured: `중처법` MISS, `산안법` MISS,
+`전상법` rank 154,
 `AI 기본법` rank 8. This module owns one curated alias -> official-name mapping
 and rewrites those tokens in the query before it is embedded. **The index is not
 touched**: expansion moves the query vector onto the official name the corpus
@@ -20,7 +21,7 @@ Rules for entries:
   were already rank 1 are kept only where they measured neutral.
 - Alias matching is bounded: an alias only fires when it stands alone, not
   embedded inside a longer word (`중처법상` matches, `중처법률` does not).
-  Common trailing particles (은/는/이/가/을/를/의/에/도/만/상/로/과/와/에서/으로)
+  Common trailing particles ('은/는/이/가/을/를/의/에/도/만/상/로/과/와/에서/으로')
   are matched and re-emitted, so `중처법은 개정되나요` expands too.
 
 Not covered here: near-namesake confusions where the query already IS the
@@ -37,13 +38,13 @@ from dataclasses import dataclass
 # Curated and measured: every entry below either fixed a retrieval failure or
 # measured neutral (see agent_memories/20-semantic-query-quality-eval/ §9).
 ALIASES: dict[str, str] = {
-    # 중대재해
+    # Serious industrial accidents
     '중처법': '중대재해 처벌 등에 관한 법률',
     '중대재해처벌법': '중대재해 처벌 등에 관한 법률',
-    # 산업안전
+    # Workplace safety
     '산안법': '산업안전보건법',
     '산재법': '산업재해보상보험법',
-    # 노동 / 소비자 / 공정거래
+    # Labor / consumer / fair trade
     '근기법': '근로기준법',
     '노조법': '노동조합 및 노동관계조정법',
     '전상법': '전자상거래 등에서의 소비자보호에 관한 법률',
@@ -51,19 +52,19 @@ ALIASES: dict[str, str] = {
     '가맹사업법': '가맹사업거래의 공정화에 관한 법률',
     '대부업법': '대부업 등의 등록 및 금융이용자 보호에 관한 법률',
     '공정거래법': '독점규제 및 공정거래에 관한 법률',
-    # 세제 / 금융
+    # Tax / finance
     '상증법': '상속세 및 증여세법',
     '자본시장법': '자본시장과 금융투자업에 관한 법률',
-    # 주택 / 전세
+    # Housing / lease deposits
     '주임법': '주택임대차보호법',
     '전세사기특별법': '전세사기피해자 지원 및 주거안정에 관한 특별법',
-    # 정보 / 플랫폼
+    # Data / platforms
     '개보법': '개인정보 보호법',
     '정통망법': '정보통신망 이용촉진 및 정보보호 등에 관한 법률',
     '플랫폼법': '온라인 플랫폼 중개거래의 공정화에 관한 법률',
     'AI 기본법': '인공지능 발전과 신뢰 기반 조성 등에 관한 기본법',
     '인공지능 기본법': '인공지능 발전과 신뢰 기반 조성 등에 관한 기본법',
-    # 형사 / 가족
+    # Criminal / family
     # NOTE: '스토킹처벌법' is deliberately absent - its raw form already ranks
     # the bill 1st and expanding it measured 1 -> 2, so the entry was removed.
     '청탁금지법': '부정청탁 및 금품등 수수의 금지에 관한 법률',

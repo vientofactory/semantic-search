@@ -1,7 +1,7 @@
 """Stage 0: learning-corpus data source — LawCast DB `proposalReason`.
 
 The corpus this project learns (chunks, embeds, indexes) comes from the
-`proposalReason` column of `notice_archives`: the 제안이유/주요내용 text that
+`proposalReason` column of `notice_archives`: the `제안이유`/`주요내용` text that
 LawCast already parsed and stored in SQLite. This module is the single place
 that touches the database, and it deliberately extracts no text from HTML —
 `source_html` snapshots are never read and no page scraping happens here.

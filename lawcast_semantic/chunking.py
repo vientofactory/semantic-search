@@ -1,7 +1,7 @@
 """Stage 1b: section-aware chunking of cleaned legislation text.
 
 Chunking strategy:
-  1. detect sections (제안이유 / 주요내용 / ...) and their paragraphs
+  1. detect sections ('제안이유' / '주요내용' / ...) and their paragraphs
   2. turn each paragraph into units (long paragraphs are split at sentence
      boundaries; pathological sentences at raw chars)
   3. greedily pack consecutive units into chunks, carrying the tail of the
