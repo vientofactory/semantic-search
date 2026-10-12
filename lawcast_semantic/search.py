@@ -126,7 +126,7 @@ class SemanticSearcher:
         Equal scores are broken by chunk_id so ranking is reproducible even
         when the corpus contains duplicate content.
 
-        Citizen aliases (중처법, 산안법, ...) are rewritten to their official
+        Citizen aliases (`중처법`, `산안법`, ...) are rewritten to their official
         bill names before embedding (see `aliases.expand_query`); the corpus
         has no such surface form, so without it those queries return nothing.
         """

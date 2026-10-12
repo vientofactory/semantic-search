@@ -8,7 +8,7 @@ enumerated items ("가.", "나.", "1)", ...).
 The corpus rarely writes a header as a line of its own. It usually GLUES the
 label to the paragraph it introduces:
 
-    제안이유 및 주요내용 현행법은 ...
+    '제안이유 및 주요내용 현행법은 ...'
 
 so a header is modelled here as a line PREFIX, not a whole line (see
 `SECTION_HEADER_RE`). Recognizing it is what keeps the 11-character label out of
@@ -37,7 +37,7 @@ _HORIZONTAL_SPACE_RE = re.compile(r'[ \t\u3000]+')
 _MULTI_NEWLINE_RE = re.compile(r'\n{3,}')
 
 # Enumerated item markers at the start of a line or sentence. The ordinal
-# syllable set is the 14 Korean enumerators (가나다라마바사아자차카타파하); the
+# syllable set is the 14 Korean enumerators ('가나다라마바사아자차카타파하'); the
 # numeric, parenthesized and circled forms cover the rest of what the corpus
 # writes. A marker is only a marker when whitespace or the line end follows it,
 # so ordinary prose that merely starts with the same characters is untouched.
@@ -63,11 +63,12 @@ SECTION_HEADER_CORE = (
 # whitespace or the line end: '주요 내용은 ...' is a sentence that happens to
 # start with the same characters, and stripping it would delete real text.
 #
-# An enumeration marker is deliberately NOT accepted here. '가. 제안이유' does
-# occur, but '가.' also opens ordinary body items, and '가. 주요 내용 첫 번째
-# 항목임.' is content that would be misread as a label — the 14 enumerated
-# headers in a 3,000-notice sample are not worth that. Such a line keeps its
-# label as 4 characters of content, which chunking then treats as body.
+# An enumeration marker is deliberately NOT accepted here: '가. 제안이유'
+# does occur, but '가.' also opens ordinary body items, and
+# '가. 주요 내용 첫 번째 항목임.' is content that would be misread as a
+# label — the 14 enumerated headers in a 3,000-notice sample are not worth
+# that. Such a line keeps its label as 4 characters of content, which
+# chunking then treats as body.
 SECTION_HEADER_RE = re.compile(
     rf'^\s*(?:[\[\(【]\s*)?(?:대안\s*의\s*)?(?:[\[\(【]\s*)?'
     rf'(?P<header>{SECTION_HEADER_CORE})[\]\)】]?(?=\s|$)'
@@ -102,8 +103,8 @@ def split_section_header(paragraph: str) -> tuple[str, str] | None:
 # A marker or label glued to the END of a sentence instead of standing on its
 # own line:
 #
-#     ... 것임(안 제80조의2). 참고사항 이 법률안은 ...
-#     ... 함(안 제245조의6). 바. 검사의 사건 처리 ...
+#     '... 것임(안 제80조의2). 참고사항 이 법률안은 ...'
+#     '... 함(안 제245조의6). 바. 검사의 사건 처리 ...'
 #
 # Only a sentence boundary can precede one here, and the two-character
 # lookbehind excludes a marker's own period ('가. 주요 내용 ...' is a body item
