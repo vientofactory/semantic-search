@@ -443,6 +443,86 @@ def test_repair_hook_exception_is_contained(monkeypatch, phases):
     assert 'boot repair failed: RuntimeError: runner bug' in state.error
 
 
+def test_hit_carries_lexical_evidence():
+    """Wire flag: shared surface tokens report True, unrelated chunks False."""
+    from types import SimpleNamespace
+
+    import service.app as app_module
+
+    result = SimpleNamespace(
+        chunk_id='c1',
+        notice_num=1,
+        subject='법률안',
+        committee='위원회',
+        section='제안이유',
+        score=0.6,
+        text='세입자를 보호한다',
+    )
+    chunks = {'c1': {'subject': '주택임대차보호법', 'text': '세입자를 보호한다'}}
+    assert app_module._hit(result, '세입자 보호', chunks).lexicalEvidence is True
+    far = {'c1': {'subject': '동물보호법', 'text': '유기동물을 처벌한다'}}
+    assert app_module._hit(result, '오늘 점심 메뉴', far).lexicalEvidence is False
+    # Unknown chunks (older test doubles) fail safe to no evidence.
+    assert app_module._hit(result, '세입자 보호', {}).lexicalEvidence is False
+
+
+def test_search_response_carries_evidence_flag(client):
+    body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
+    assert 'lexicalEvidence' in body['results'][0]
+    assert 'lexicalEvidence' in body['weakResults'][0]
+
+
+def test_shadow_scoring_leaves_response_unchanged(client, monkeypatch, caplog):
+    """Shadow mode logs rerank scores; served results match the off path."""
+    from types import SimpleNamespace
+
+    import service.app as app_module
+
+    def fake_score(query, texts):
+        return [9.9] * len(texts)
+
+    app_module.STATE.record_reranker(
+        SimpleNamespace(model_name='stub', device='cpu', score=fake_score)
+    )
+    monkeypatch.setattr(app_module.config, 'RERANK_MODE', 'shadow')
+    with caplog.at_level('INFO', logger='service'):
+        body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
+    assert [hit['noticeNum'] for hit in body['results']] == [2220607]
+    assert [hit['noticeNum'] for hit in body['weakResults']] == [2220715]
+    assert 'rerank-shadow n=' in caplog.text
+    assert 'top1=9.900' in caplog.text
+    # The sidecar annotates: every served hit carries its window logit.
+    assert body['results'][0]['rerankScore'] == pytest.approx(9.9)
+    assert body['weakResults'][0]['rerankScore'] == pytest.approx(9.9)
+
+
+def test_hits_report_no_rerank_score_while_scorer_is_off(client):
+    """`off` mode annotates nothing: the backend treats null as unscored."""
+    body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
+    assert body['results'][0]['rerankScore'] is None
+    assert body['weakResults'][0]['rerankScore'] is None
+
+
+def test_rerank_scoring_failure_serves_unscored(client, monkeypatch, caplog):
+    """A throwing scorer degrades to unscored hits, never to a 500."""
+    from types import SimpleNamespace
+
+    import service.app as app_module
+
+    def boom(query, texts):
+        raise RuntimeError('weights exploded')
+
+    app_module.STATE.record_reranker(SimpleNamespace(model_name='stub', device='cpu', score=boom))
+    monkeypatch.setattr(app_module.config, 'RERANK_MODE', 'shadow')
+    with caplog.at_level('INFO', logger='service'):
+        response = client.get('/search', params={'query': '세입자 보호', 'k': 3})
+    assert response.status_code == 200
+    body = response.json()
+    assert [hit['noticeNum'] for hit in body['results']] == [2220607]
+    assert body['results'][0]['rerankScore'] is None
+    assert 'rerank-shadow scoring failed' in caplog.text
+
+
 def test_import_service_app_stays_light():
     """§6.1: `import service.app` must not pull the model stack."""
     code = (
