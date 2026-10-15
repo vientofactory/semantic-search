@@ -249,6 +249,10 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
 | `LAWCAST_SEMANTIC_MAX_QUERY_LENGTH`   | `500`       | `/search` 최대 질의 길이(자), 초과 시 422                                                                          |
 | `LAWCAST_SEMANTIC_MAX_K`              | `200`       | `/search` k 상한 (단위=청크). 백엔드가 `/health.maxK`로 읽어 사용하므로 재시작만으로 반영, 기본값은 `SIDE_CAR_MAX_CHUNK_K`와 계약 테스트로 고정 |
 | `LAWCAST_SEMANTIC_DEFAULT_K`          | `5`         | `/search` 기본 창 크기 (`1 ≤ DEFAULT_K ≤ MAX_K`, 위반 시 임포트 실패)                                              |
+| `LAWCAST_SEMANTIC_RERANK_MODEL`       | `nlpai-lab/KURE-Reranker-nano` | 섀도우 리랭커 모델 (stage 4c, CrossEncoder) |
+| `LAWCAST_SEMANTIC_RERANK_MODE`        | `off`       | `off` = 미로드, `shadow` = 서빙 불변·점수 로그만 (그 외는 임포트 실패) |
+| `LAWCAST_SEMANTIC_RERANK_TOP_K`       | `20`        | 섀도우 스코어 대상 상위 히트 수 (서빙 순, CPU 작업 상한) |
+| `LAWCAST_SEMANTIC_RERANK_DEVICE`      | `cpu`       | 리랭커 실행 디바이스 (운영 이미지 = CPU) |
 
 - **`.env` 파일**: `lawcast_semantic/config.py`가 임포트 시 프로젝트 루트의 `.env`를 읽습니다
   (`LAWCAST_SEMANTIC_ENV_FILE`로 경로 지정, **빈값 = 파일 읽기 끔**). 프로세스 환경(compose

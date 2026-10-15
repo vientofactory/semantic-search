@@ -27,6 +27,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from lawcast_semantic import config  # env-only module: import stays light
+from lawcast_semantic.hybrid import has_lexical_evidence
 from lawcast_semantic.omp_env import use_single_threaded_omp
 
 use_single_threaded_omp()
@@ -94,6 +95,10 @@ class EngineState:
         # can show a tick while it runs (record_update clears `updating`).
         self.last_update_triggered_at: str | None = None
         self.updating = False
+        # Cross-encoder shadow scorer (§ rerank): loaded after the dense
+        # engine is ready; None while disabled (`off`) or not yet loaded.
+        self.reranker: Any = None
+        self.rerank_error: str | None = None
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -111,6 +116,8 @@ class EngineState:
                 'lastUpdateError': self.last_update_error,
                 'lastUpdateTriggeredAt': self.last_update_triggered_at,
                 'updating': self.updating,
+                'reranker': self.reranker,
+                'rerankError': self.rerank_error,
             }
 
     def mark_ready(
@@ -194,6 +201,17 @@ class EngineState:
             self.last_update_triggered_at = datetime.now(UTC).isoformat()
             self.updating = True
 
+    def record_reranker(self, reranker: Any) -> None:
+        """Register the loaded shadow scorer (serving never waits for it)."""
+        with self._lock:
+            self.reranker = reranker
+            self.rerank_error = None
+
+    def record_rerank_error(self, error: str) -> None:
+        """A failed reranker load degrades to unscored shadow, never to `failed`."""
+        with self._lock:
+            self.rerank_error = error
+
     def record_update(self, result: str, error: str | None = None) -> None:
         """Record one update tick's outcome for §5.2's additive /health fields.
 
@@ -215,6 +233,16 @@ class SearchHit(BaseModel):
     section: str
     score: float
     text: str
+    # Whether the (alias-expanded) query shares a content token with this
+    # chunk's subject + text (lawcast_semantic.hybrid). The backend's
+    # no-result gate reads this flag; it never filters inside the sidecar so
+    # chunk-window widening keeps working (see contract spec).
+    lexicalEvidence: bool
+    # Cross-encoder relevance logit for this chunk (`reranking.Reranker`),
+    # scored over the served window's top hits when the shadow scorer is
+    # loaded. None while the scorer is disabled or absent: the backend's
+    # gate treats unknown as unscored (fail-open) and never as a reject.
+    rerankScore: float | None = None
 
 
 class SearchResponse(BaseModel):
@@ -233,8 +261,22 @@ class SearchResponse(BaseModel):
     weakResults: list[SearchHit]
 
 
-def _hit(result: Any) -> SearchHit:
-    """Map one engine SearchResult onto the wire hit shape."""
+def _hit(
+    result: Any,
+    query: str,
+    chunks_by_id: dict,
+    rerank_scores: dict[str, float] | None = None,
+) -> SearchHit:
+    """Map one engine SearchResult onto the wire hit shape.
+
+    `chunks_by_id` is the serving searcher's chunk lookup; hits whose chunk
+    is unknown (older test doubles) report no lexical evidence.
+    `rerank_scores` maps chunk ids to cross-encoder logits (None while the
+    shadow scorer is disabled); unscored hits report None, never a number.
+    """
+    chunk = chunks_by_id.get(result.chunk_id)
+    evidence = chunk is not None and has_lexical_evidence(query, chunk)
+    rerank_score = rerank_scores.get(result.chunk_id) if rerank_scores is not None else None
     return SearchHit(
         chunkId=result.chunk_id,
         noticeNum=result.notice_num,
@@ -243,6 +285,8 @@ def _hit(result: Any) -> SearchHit:
         section=result.section,
         score=result.score,
         text=result.text,
+        lexicalEvidence=evidence,
+        rerankScore=rerank_score,
     )
 
 
@@ -298,6 +342,55 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
             state.mark_failed(f'{type(repair_exc).__name__}: {repair_exc}')
             return
     state.mark_ready(searcher, embedder.model_name, fingerprint)
+    maybe_load_reranker(state)
+
+
+def maybe_load_reranker(state: EngineState) -> None:
+    """Load the cross-encoder shadow scorer when `RERANK_MODE` enables it.
+
+    Runs after the dense engine is ready so readiness never waits on the
+    reranker; any failure degrades to unscored shadow and is recorded for
+    the logs. The model stack is imported here, keeping module import light.
+    """
+    if config.RERANK_MODE == 'off':
+        return
+    try:
+        from lawcast_semantic.reranking import load_reranker
+
+        state.record_reranker(load_reranker())
+        service_logger.info('rerank shadow scorer ready (%s)', config.RERANK_MODEL)
+    except Exception as exc:  # noqa: BLE001 - shadow must never break serving
+        state.record_rerank_error(f'{type(exc).__name__}: {exc}')
+        service_logger.warning('rerank shadow scorer unavailable: %s', exc)
+
+
+def score_rerank_window(reranker: Any, query: str, hits: list) -> dict[str, float]:
+    """Score the served window's top hits and log the scores (no filtering).
+
+    `hits` arrive in served rank order (clear tier then weak band); only the
+    top `RERANK_TOP_K` are scored to bound the added CPU work. Returns a
+    chunk-id -> logit map for the wire annotation; a scoring failure logs
+    once and returns an empty map so the response still serves unscored.
+    """
+    from lawcast_semantic.reranking import shadow_inputs
+
+    try:
+        window = list(hits)[: config.RERANK_TOP_K]
+        texts = shadow_inputs(query, window)
+        if not texts:
+            return {}
+        scores = reranker.score(query, texts)
+        top = sorted(scores, reverse=True)[:5]
+        service_logger.info(
+            'rerank-shadow n=%d top1=%.3f top5=%s',
+            len(scores),
+            top[0],
+            ','.join(f'{value:.3f}' for value in top),
+        )
+        return {hit.chunk_id: score for hit, score in zip(window, scores)}
+    except Exception as exc:  # noqa: BLE001 - shadow must never break serving
+        service_logger.warning('rerank-shadow scoring failed: %s', exc)
+        return {}
 
 
 def create_state() -> EngineState:
@@ -406,12 +499,26 @@ def search(
             status_code=503,
             detail=f'semantic engine unavailable: {snapshot["error"]}',
         )
-    outcome = snapshot['searcher'].search_tiered(query, k=k)
+    searcher = snapshot['searcher']
+    outcome = searcher.search_tiered(query, k=k)
+    chunks_by_id = getattr(searcher, 'chunks_by_id', None) or {}
+    # The sidecar annotates, never filters (§1 of the gate plan): per-hit
+    # rerank logits ride along so the backend can gate post-accumulation
+    # without faking window exhaustion. None while the scorer is off/absent.
+    rerank_scores: dict[str, float] | None = None
+    if config.RERANK_MODE != 'off' and snapshot.get('reranker') is not None:
+        rerank_scores = score_rerank_window(
+            snapshot['reranker'],
+            query,
+            [*outcome.results, *outcome.weak_results],
+        )
     return SearchResponse(
         query=query,
         k=k,
         model=snapshot['model'],
         lastUpdateAt=snapshot['lastUpdateAt'],
-        results=[_hit(result) for result in outcome.results],
-        weakResults=[_hit(result) for result in outcome.weak_results],
+        results=[_hit(result, query, chunks_by_id, rerank_scores) for result in outcome.results],
+        weakResults=[
+            _hit(result, query, chunks_by_id, rerank_scores) for result in outcome.weak_results
+        ],
     )

@@ -172,3 +172,24 @@ if not 1 <= DEFAULT_K <= MAX_K:
         'LAWCAST_SEMANTIC_DEFAULT_K must be between 1 and LAWCAST_SEMANTIC_MAX_K '
         f'(got {DEFAULT_K}, max {MAX_K})'
     )
+
+# Cross-encoder rerank shadow scorer (agent_memories/42-sidecar-lexical-gate/
+# plan.md §9-10). `off` (default) never loads the model; `shadow` loads it
+# after the dense engine is ready, logs per-query rerank scores, and
+# annotates each served hit with its logit (`rerankScore`). The sidecar
+# never filters on the score (that would fake window exhaustion); the
+# backend gates post-accumulation. Unknown modes fail fast like the tiers.
+RERANK_MODEL = os.environ.get('LAWCAST_SEMANTIC_RERANK_MODEL', 'nlpai-lab/KURE-Reranker-nano')
+RERANK_MODE = os.environ.get('LAWCAST_SEMANTIC_RERANK_MODE', 'off').strip().lower() or 'off'
+if RERANK_MODE not in {'off', 'shadow'}:
+    raise ValueError(
+        f"LAWCAST_SEMANTIC_RERANK_MODE must be 'off' or 'shadow' (got {RERANK_MODE!r})"
+    )
+# How many of the served window's top hits the shadow scorer scores per
+# query (results first, then the weak band). Bounds the added CPU work.
+RERANK_TOP_K = int(os.environ.get('LAWCAST_SEMANTIC_RERANK_TOP_K', '20'))
+if RERANK_TOP_K < 1:
+    raise ValueError(f'LAWCAST_SEMANTIC_RERANK_TOP_K must be >= 1 (got {RERANK_TOP_K})')
+# Device the reranker runs on. Default `cpu` matches the production image
+# (no accelerator there); override for local measurement only.
+RERANK_DEVICE = os.environ.get('LAWCAST_SEMANTIC_RERANK_DEVICE', 'cpu').strip() or 'cpu'

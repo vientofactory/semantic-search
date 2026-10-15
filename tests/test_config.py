@@ -29,6 +29,10 @@ STRIPPED_ENV = {
     'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH',
     'LAWCAST_SEMANTIC_MAX_K',
     'LAWCAST_SEMANTIC_DEFAULT_K',
+    'LAWCAST_SEMANTIC_RERANK_MODEL',
+    'LAWCAST_SEMANTIC_RERANK_MODE',
+    'LAWCAST_SEMANTIC_RERANK_TOP_K',
+    'LAWCAST_SEMANTIC_RERANK_DEVICE',
 }
 
 
@@ -131,6 +135,18 @@ def run_config_failure(**env_overrides: str) -> str:
     )
     assert result.returncode != 0, 'config imported despite invalid settings'
     return result.stderr
+
+
+def test_rerank_shadow_defaults_to_off_with_bounded_cpu_window():
+    """Shadow scoring is opt-in; the default model/window/device are the
+    calibrated pilot values (nano, top-20, cpu for prod parity)."""
+    lines = run_config('RERANK_MODEL', 'RERANK_MODE', 'RERANK_TOP_K', 'RERANK_DEVICE')
+    assert lines == ['nlpai-lab/KURE-Reranker-nano', 'off', '20', 'cpu']
+
+
+def test_rerank_invalid_mode_fails_fast():
+    stderr = run_config_failure(LAWCAST_SEMANTIC_RERANK_MODE='sometimes')
+    assert 'RERANK_MODE' in stderr
 
 
 def test_min_similarity_above_clear_fails_fast():

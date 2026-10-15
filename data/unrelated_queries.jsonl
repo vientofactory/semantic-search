@@ -1,0 +1,54 @@
+{"category":"gibberish","expect":"empty","query":"asdfghjkl"}
+{"category":"gibberish","expect":"empty","query":"qwertyuiop zxcvbnm"}
+{"category":"gibberish","expect":"empty","query":"ㅁㄴㅇㄹㅁㄴㅇㄹ"}
+{"category":"gibberish","expect":"empty","query":"1234567890"}
+{"category":"gibberish","expect":"empty","query":"ㅋㅋㅋㅋㅋㅋㅋㅋㅋ"}
+{"category":"english-ood","expect":"empty","query":"hello world test query"}
+{"category":"english-ood","expect":"empty","query":"New York subway delay refund"}
+{"category":"english-ood","expect":"empty","query":"how to fix python null pointer error"}
+{"category":"english-ood","expect":"empty","query":"Champions League final result predictions"}
+{"category":"english-ood","expect":"empty","query":"best ramen shop in Tokyo"}
+{"category":"daily-life","expect":"empty","query":"오늘 점심 메뉴 추천"}
+{"category":"daily-life","expect":"empty","query":"우리 동네 축제 일정"}
+{"category":"daily-life","expect":"empty","query":"강아지 산책 코스 추천"}
+{"category":"daily-life","expect":"empty","query":"로또 당첨 번호 확인"}
+{"category":"daily-life","expect":"empty","query":"어제 본 드라마 결말이 궁금해요"}
+{"category":"daily-life","expect":"empty","query":"주말 캠핑 장소 추천"}
+{"category":"daily-life","expect":"empty","query":"다이어트 식단표 짜줘"}
+{"category":"daily-life","expect":"empty","query":"이사 업체 비용 비교"}
+{"category":"daily-life","expect":"empty","query":"생일 선물 추천해줘"}
+{"category":"daily-life","expect":"empty","query":"비 오는 날 볼만한 영화"}
+{"category":"sports-entertainment","expect":"empty","query":"2026 월드컵 우승 전략"}
+{"category":"sports-entertainment","expect":"empty","query":"BTS 콘서트 티켓 예매 방법"}
+{"category":"sports-entertainment","expect":"empty","query":"손흥민 골 하이라이트 영상"}
+{"category":"sports-entertainment","expect":"empty","query":"프로야구 순위 예측"}
+{"category":"sports-entertainment","expect":"empty","query":"아이돌 오디션 프로그램 투표하기"}
+{"category":"sports-entertainment","expect":"empty","query":"넷플릭스 신작 추천"}
+{"category":"foreign","expect":"empty","query":"미국 대선 결과 분석"}
+{"category":"foreign","expect":"empty","query":"우크라이나 전쟁 전망"}
+{"category":"foreign","expect":"empty","query":"일본 애니메이션 추천"}
+{"category":"foreign","expect":"empty","query":"중국 경제 성장률 전망"}
+{"category":"foreign","expect":"empty","query":"유럽 여행 코스 추천"}
+{"category":"foreign","expect":"empty","query":"프랑스 와인 종류 설명"}
+{"category":"generic-trap","expect":"empty","query":"오늘 일정 계획 세우기"}
+{"category":"generic-trap","expect":"empty","query":"국가 전략 계획 수립 절차"}
+{"category":"generic-trap","expect":"empty","query":"우리 사회 발전 방향"}
+{"category":"generic-trap","expect":"empty","query":"새로운 제도 기반 마련 방안"}
+{"category":"generic-trap","expect":"empty","query":"향후 추진 일정 안내"}
+{"category":"generic-trap","expect":"empty","query":"주요 내용 관련 계획 정리"}
+{"category":"generic-trap","expect":"empty","query":"지원 제도 안내 일정표"}
+{"category":"generic-trap","expect":"empty","query":"관리 계획 수립 절차"}
+{"category":"vague-boundary","expect":"boundary","query":"그거 어떻게 되나요"}
+{"category":"vague-boundary","expect":"boundary","query":"돈 관련 법"}
+{"category":"vague-boundary","expect":"boundary","query":"환경 보호"}
+{"category":"vague-boundary","expect":"boundary","query":"뭔가 이상한 법 있어요"}
+{"category":"vague-boundary","expect":"boundary","query":"요즘 화제인 법"}
+{"category":"vague-boundary","expect":"boundary","query":"화성 이주 계획"}
+{"category":"valid-control","expect":"served","query":"조세특례제한법 개정"}
+{"category":"valid-control","expect":"served","query":"중처법"}
+{"category":"valid-control","expect":"served","query":"주택임대차보호법 보증금"}
+{"category":"valid-control","expect":"served","query":"예보법 개정"}
+{"category":"valid-control","expect":"served","query":"스토킹처벌법 강화"}
+{"category":"valid-control","expect":"served","query":"청년 일자리 늘리기"}
+{"category":"valid-control","expect":"served","query":"해외직구할 때 관세 얼마나 내야 해?"}
+{"category":"valid-control","expect":"served","query":"아파트 관리비 장부 공개하나요?"}
