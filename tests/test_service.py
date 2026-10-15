@@ -503,6 +503,30 @@ def test_hits_report_no_rerank_score_while_scorer_is_off(client):
     assert body['weakResults'][0]['rerankScore'] is None
 
 
+def test_rerank_opt_out_skips_scoring_pass(client, monkeypatch, caplog):
+    """`rerank=false` serves unscored without touching the scorer."""
+    from types import SimpleNamespace
+
+    import service.app as app_module
+
+    def fail_score(query, texts):
+        raise AssertionError('scorer touched despite rerank=false')
+
+    app_module.STATE.record_reranker(
+        SimpleNamespace(model_name='stub', device='cpu', score=fail_score)
+    )
+    monkeypatch.setattr(app_module.config, 'RERANK_MODE', 'shadow')
+    with caplog.at_level('INFO', logger='service'):
+        body = client.get(
+            '/search', params={'query': '세입자 보호', 'k': 3, 'rerank': False}
+        ).json()
+    assert body['results'][0]['rerankScore'] is None
+    assert body['weakResults'][0]['rerankScore'] is None
+    assert 'rerank-shadow n=' not in caplog.text
+    assert 'search-timing' in caplog.text
+    assert 'rerank=skipped' in caplog.text
+
+
 def test_rerank_scoring_failure_serves_unscored(client, monkeypatch, caplog):
     """A throwing scorer degrades to unscored hits, never to a 500."""
     from types import SimpleNamespace

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -375,17 +376,20 @@ def score_rerank_window(reranker: Any, query: str, hits: list) -> dict[str, floa
     from lawcast_semantic.reranking import shadow_inputs
 
     try:
+        started = time.perf_counter()
         window = list(hits)[: config.RERANK_TOP_K]
         texts = shadow_inputs(query, window)
         if not texts:
             return {}
         scores = reranker.score(query, texts)
+        rerank_ms = (time.perf_counter() - started) * 1000.0
         top = sorted(scores, reverse=True)[:5]
         service_logger.info(
-            'rerank-shadow n=%d top1=%.3f top5=%s',
+            'rerank-shadow n=%d top1=%.3f top5=%s rerank_ms=%.1f',
             len(scores),
             top[0],
             ','.join(f'{value:.3f}' for value in top),
+            rerank_ms,
         )
         return {hit.chunk_id: score for hit, score in zip(window, scores)}
     except Exception as exc:  # noqa: BLE001 - shadow must never break serving
@@ -488,6 +492,15 @@ def manual_reload() -> dict:
 def search(
     query: str = Query(..., min_length=1, max_length=MAX_QUERY_LENGTH),
     k: int = Query(DEFAULT_K, ge=1, le=MAX_K),
+    rerank: bool | None = Query(
+        default=None,
+        description=(
+            'Ask for cross-encoder logits on the served window. None (older '
+            'backend) keeps the legacy behavior: score whenever the shadow '
+            'scorer is loaded. Explicit false skips the scoring pass so '
+            'callers that never consume `rerankScore` avoid ~1s of CPU.'
+        ),
+    ),
 ) -> SearchResponse:
     if not query.strip():
         raise HTTPException(status_code=400, detail='query must not be blank')
@@ -499,20 +512,29 @@ def search(
             status_code=503,
             detail=f'semantic engine unavailable: {snapshot["error"]}',
         )
+    started = time.perf_counter()
     searcher = snapshot['searcher']
     outcome = searcher.search_tiered(query, k=k)
+    dense_ms = (time.perf_counter() - started) * 1000.0
     chunks_by_id = getattr(searcher, 'chunks_by_id', None) or {}
     # The sidecar annotates, never filters (§1 of the gate plan): per-hit
     # rerank logits ride along so the backend can gate post-accumulation
-    # without faking window exhaustion. None while the scorer is off/absent.
+    # without faking window exhaustion. None while the scorer is off/absent
+    # or the caller opts out (`rerank=false`: the backend sends it when its
+    # rerank leg is disabled and no score is consumed downstream).
     rerank_scores: dict[str, float] | None = None
-    if config.RERANK_MODE != 'off' and snapshot.get('reranker') is not None:
+    rerank_ms = 0.0
+    want_rerank = True if rerank is None else rerank
+    if want_rerank and config.RERANK_MODE != 'off' and snapshot.get('reranker') is not None:
+        rerank_started = time.perf_counter()
         rerank_scores = score_rerank_window(
             snapshot['reranker'],
             query,
             [*outcome.results, *outcome.weak_results],
         )
-    return SearchResponse(
+        rerank_ms = (time.perf_counter() - rerank_started) * 1000.0
+    annotate_started = time.perf_counter()
+    response = SearchResponse(
         query=query,
         k=k,
         model=snapshot['model'],
@@ -522,3 +544,14 @@ def search(
             _hit(result, query, chunks_by_id, rerank_scores) for result in outcome.weak_results
         ],
     )
+    annotate_ms = (time.perf_counter() - annotate_started) * 1000.0
+    service_logger.info(
+        'search-timing k=%d dense_ms=%.1f annotate_ms=%.1f rerank_ms=%.1f total_ms=%.1f rerank=%s',
+        k,
+        dense_ms,
+        annotate_ms,
+        rerank_ms,
+        (time.perf_counter() - started) * 1000.0,
+        'scored' if rerank_scores is not None else 'skipped',
+    )
+    return response

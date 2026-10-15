@@ -104,8 +104,10 @@ def test_load_reranker_uses_config_defaults():
         'import inspect\n'
         'source = inspect.getsource(reranking.load_reranker)\n'
         "assert 'CrossEncoder' in source\n"
+        "assert 'max_length' in source\n"
         "assert config.RERANK_DEVICE == 'cpu'\n"
         'assert config.RERANK_TOP_K >= 1\n'
+        'assert config.RERANK_MAX_LENGTH >= 1\n'
     )
     result = subprocess.run(
         [sys.executable, '-c', code],

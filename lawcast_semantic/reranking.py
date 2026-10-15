@@ -42,11 +42,17 @@ class Reranker:
 def load_reranker(
     model_name: str = config.RERANK_MODEL,
     device: str = config.RERANK_DEVICE,
+    max_length: int = config.RERANK_MAX_LENGTH,
 ) -> Reranker:
-    """Load the cross-encoder onto `device` (imports the model stack here)."""
+    """Load the cross-encoder onto `device` (imports the model stack here).
+
+    `max_length` bounds the query-document truncation window; the served
+    chunks are short (see `config.RERANK_MAX_LENGTH`), so a smaller window
+    sheds padding/attention work without touching the model weights.
+    """
     from sentence_transformers import CrossEncoder
 
-    predictor = CrossEncoder(model_name, max_length=512, device=device)
+    predictor = CrossEncoder(model_name, max_length=max_length, device=device)
     return Reranker(model_name, device, predictor.predict)
 
 

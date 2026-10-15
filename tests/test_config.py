@@ -33,6 +33,7 @@ STRIPPED_ENV = {
     'LAWCAST_SEMANTIC_RERANK_MODE',
     'LAWCAST_SEMANTIC_RERANK_TOP_K',
     'LAWCAST_SEMANTIC_RERANK_DEVICE',
+    'LAWCAST_SEMANTIC_RERANK_MAX_LENGTH',
 }
 
 
@@ -140,13 +141,25 @@ def run_config_failure(**env_overrides: str) -> str:
 def test_rerank_shadow_defaults_to_off_with_bounded_cpu_window():
     """Shadow scoring is opt-in; the default model/window/device are the
     calibrated pilot values (nano, top-20, cpu for prod parity)."""
-    lines = run_config('RERANK_MODEL', 'RERANK_MODE', 'RERANK_TOP_K', 'RERANK_DEVICE')
-    assert lines == ['nlpai-lab/KURE-Reranker-nano', 'off', '20', 'cpu']
+    lines = run_config(
+        'RERANK_MODEL', 'RERANK_MODE', 'RERANK_TOP_K', 'RERANK_DEVICE', 'RERANK_MAX_LENGTH'
+    )
+    assert lines == ['nlpai-lab/KURE-Reranker-nano', 'off', '20', 'cpu', '512']
 
 
 def test_rerank_invalid_mode_fails_fast():
     stderr = run_config_failure(LAWCAST_SEMANTIC_RERANK_MODE='sometimes')
     assert 'RERANK_MODE' in stderr
+
+
+def test_rerank_max_length_override_and_floor():
+    """The truncation window is env-tunable; zero refuses to import."""
+    lines = run_config(
+        'RERANK_MAX_LENGTH', env_overrides={'LAWCAST_SEMANTIC_RERANK_MAX_LENGTH': '256'}
+    )
+    assert lines == ['256']
+    stderr = run_config_failure(LAWCAST_SEMANTIC_RERANK_MAX_LENGTH='0')
+    assert 'RERANK_MAX_LENGTH' in stderr
 
 
 def test_min_similarity_above_clear_fails_fast():
