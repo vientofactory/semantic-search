@@ -193,3 +193,12 @@ if RERANK_TOP_K < 1:
 # Device the reranker runs on. Default `cpu` matches the production image
 # (no accelerator there); override for local measurement only.
 RERANK_DEVICE = os.environ.get('LAWCAST_SEMANTIC_RERANK_DEVICE', 'cpu').strip() or 'cpu'
+# Truncation length (tokens) of the cross-encoder input. The served window
+# holds chunks of at most CHUNK_MAX_CHARS characters plus a short query, so
+# the 512 default pads and attends over mostly empty positions (attention
+# cost grows quadratically with length). Lower to 256 once the live-traffic
+# calibration confirms no score drift; the code default stays 512 so a
+# deploy without the env var behaves exactly as before.
+RERANK_MAX_LENGTH = int(os.environ.get('LAWCAST_SEMANTIC_RERANK_MAX_LENGTH', '512'))
+if RERANK_MAX_LENGTH < 1:
+    raise ValueError(f'LAWCAST_SEMANTIC_RERANK_MAX_LENGTH must be >= 1 (got {RERANK_MAX_LENGTH})')
