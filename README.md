@@ -41,7 +41,7 @@ flowchart LR
 semantic-search/
 ├── lawcast_semantic/             # 파이프라인 라이브러리 (자체 완결, 루트 모듈 의존 없음)
 │   ├── config.py                 #     설정·아티팩트 경로 단일 소유 (env: LAWCAST_SEMANTIC_*)
-│   ├── device.py                 #     임베딩 디바이스 단일 소유 (auto: cuda > mps > xpu > cpu)
+│   ├── device.py                 #     임베딩·리랭커 디바이스 단일 소유 (auto: cuda > mps > xpu > cpu)
 │   ├── datasource.py             # 0.  학습 데이터 소스: DB proposalReason + ai_summary (읽기 전용)
 │   ├── preprocess.py             # 1a. 텍스트 정규화 + 섹션(제안이유/주요내용) 감지
 │   ├── chunking.py               # 1b. 섹션 인식 청킹 (문장 경계 + 오버랩)
@@ -252,7 +252,7 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
 | `LAWCAST_SEMANTIC_RERANK_MODEL`       | `nlpai-lab/KURE-Reranker-nano` | 섀도우 리랭커 모델 (stage 4c, CrossEncoder) |
 | `LAWCAST_SEMANTIC_RERANK_MODE`        | `off`       | `off` = 미로드, `shadow` = 서빙 불변·점수 로그만 (그 외는 임포트 실패) |
 | `LAWCAST_SEMANTIC_RERANK_TOP_K`       | `20`        | 섀도우 스코어 대상 상위 히트 수 (서빙 순, CPU 작업 상한) |
-| `LAWCAST_SEMANTIC_RERANK_DEVICE`      | `cpu`       | 리랭커 실행 디바이스 (운영 이미지 = CPU) |
+| `LAWCAST_SEMANTIC_RERANK_DEVICE`      | `cpu`       | 리랭커 요청 디바이스 (`cpu` 고정 = 운영 동작, `auto` = 임베딩과 동일 CUDA > MPS > XPU 탐지 후 cpu 폴백 — 동시 부하 시 MPS는 Metal 레이스로 abort하므로 단일 질의 측정용 opt-in) |
 
 - **`.env` 파일**: `lawcast_semantic/config.py`가 임포트 시 프로젝트 루트의 `.env`를 읽습니다
   (`LAWCAST_SEMANTIC_ENV_FILE`로 경로 지정, **빈값 = 파일 읽기 끔**). 프로세스 환경(compose
@@ -661,7 +661,7 @@ ruff로 코드 품질을 관리합니다 ([ruff.toml](ruff.toml): E/F/W/I/UP 규
 - `test_incremental.py` — 증분 갱신 (행별 출처 다이제스트, 재사용·크래시 복구)
 - `test_device.py` — 디바이스 해석·폴백 (핀은 탐지 없이 존중, `auto` 우선순위
   cuda > mps > xpu > cpu, 불량 가속기는 다음 후보로 강등, 프로브 실패 시 `cpu` 재로드,
-  torch 부재 시 `cpu`)
+  torch 부재 시 `cpu`; 임베딩·리랭커 공용)
 - `test_config.py` / `test_update_runner.py` / `test_service.py` — env 게이트, 스케줄·부트
   리페어·스왑/롤백 계약, `POST /reload` 경계와 로딩 단계 분리
 - `test_concurrency.py` — HTTP 사이드카 동시성 5종 (서버 라이프사이클·동시 발사 하니스는

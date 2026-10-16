@@ -15,7 +15,6 @@ the process is restarted.
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from collections.abc import Callable
@@ -31,19 +30,16 @@ from lawcast_semantic import config  # env-only module: import stays light
 from lawcast_semantic.hybrid import has_lexical_evidence
 from lawcast_semantic.omp_env import use_single_threaded_omp
 
+from .logging import get_service_logger
+
 use_single_threaded_omp()
 
-# Tick trigger/result logs are INFO records (run_update_cycle); uvicorn's log
-# config leaves the root logger at WARNING with no root handler, which would
-# silently drop them in the real server process (found by driving a live
-# uvicorn instance). The `service` package carries its own level + handler;
-# propagation stays on so pytest caplog and any root config still see them.
-service_logger = logging.getLogger('service')
-service_logger.setLevel(logging.INFO)
-if not service_logger.handlers:
-    _handler = logging.StreamHandler()
-    _handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
-    service_logger.addHandler(_handler)
+# Sidecar logs go through the dedicated logger (`service/logging.py`): the
+# same `%(levelprefix)s` layout uvicorn's own lines use, with a `[sidecar]`
+# context marker so the two sources never read as each other. The handler
+# lives on the `service` base (children propagate); propagation stays on so
+# pytest caplog and any root config still see every record.
+service_logger = get_service_logger('service')
 
 # Boot-repair hook contract (design §6.1): (embedder, db_path) -> whether the
 # on-disk artifact set was repaired. The update runner supplies the real one;
@@ -291,6 +287,38 @@ def _hit(
     )
 
 
+def log_startup_config() -> None:
+    """Log the env-injected system settings once at process startup.
+
+    Runs at the top of `lifespan` (not per request, not per reload), so the
+    operator can see exactly which values this process booted with. Values
+    come from `lawcast_semantic.config` (env `LAWCAST_SEMANTIC_*` + optional
+    `.env` file); the resolved run device is logged separately when the
+    embedding model finishes loading.
+    """
+    service_logger.info(
+        'semantic config model=%s device_request=%s batch=%s artifacts=%s '
+        'queryLen=%s maxK=%s defaultK=%s minSim=%s clearSim=%s '
+        'rerank=%s/%s/%s/topK=%s/maxLen=%s update=%s/%s',
+        config.MODEL_NAME,
+        config.DEVICE,
+        config.EMBED_BATCH_SIZE,
+        config.ARTIFACTS_DIR,
+        config.MAX_QUERY_LENGTH,
+        config.MAX_K,
+        config.DEFAULT_K,
+        config.MIN_SIMILARITY,
+        config.CLEAR_SIMILARITY,
+        config.RERANK_MODE,
+        config.RERANK_MODEL,
+        config.RERANK_DEVICE,
+        config.RERANK_TOP_K,
+        config.RERANK_MAX_LENGTH,
+        'db' if config.DB_PATH else 'no-db',
+        config.UPDATE_CRON if config.UPDATE_CRON else 'no-schedule',
+    )
+
+
 def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -> None:
     """Load the embedding model + artifacts and register the searcher.
 
@@ -300,8 +328,11 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
     Discrimination is *which phase raised*, never the exception type.
     Importing the model stack inside the phases keeps `import service.app`
     light (no torch/faiss at module import) so validation paths and tests do
-    not pay for the model stack.
+    not pay for the model stack. Success and failure are both logged, like
+    the reranker ready line, so the embedding ready moment is observable
+    without polling `/health`.
     """
+    started = time.perf_counter()
     # Phase 1 — embedding model. Nothing downstream can succeed without it
     # (no vectors to embed, no set for reload() to validate): no repair hook.
     try:
@@ -311,6 +342,9 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
         state.record_device(getattr(embedder, 'device', None))
     except Exception as exc:  # noqa: BLE001 - any load failure must degrade cleanly
         state.mark_failed(f'{type(exc).__name__}: {exc}')
+        service_logger.warning(
+            'dense engine failed (model phase, %.1fs): %s', time.perf_counter() - started, exc
+        )
         return
 
     # Phase 2 — artifacts. Failures here (validation gates or missing/corrupt
@@ -334,6 +368,11 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
                 error += f'; boot repair failed: {type(repair_exc).__name__}: {repair_exc}'
         if not repaired:
             state.mark_failed(error)
+            service_logger.warning(
+                'dense engine failed (artifact phase, %.1fs): %s',
+                time.perf_counter() - started,
+                error,
+            )
             return
         try:
             # The hook fixed the on-disk set: finish the normal load path.
@@ -341,8 +380,21 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
             fingerprint = compute_chunks_fingerprint(searcher.chunks_by_id.values())
         except Exception as repair_exc:  # noqa: BLE001 - re-load can also fail
             state.mark_failed(f'{type(repair_exc).__name__}: {repair_exc}')
+            service_logger.warning(
+                'dense engine failed (repair reload, %.1fs): %s',
+                time.perf_counter() - started,
+                repair_exc,
+            )
             return
     state.mark_ready(searcher, embedder.model_name, fingerprint)
+    service_logger.info(
+        'dense engine ready (%s on %s, requested %s, %d chunks, %.1fs)',
+        embedder.model_name,
+        getattr(embedder, 'device', None),
+        getattr(embedder, 'requested_device', None),
+        len(searcher.chunk_ids),
+        time.perf_counter() - started,
+    )
     maybe_load_reranker(state)
 
 
@@ -358,8 +410,11 @@ def maybe_load_reranker(state: EngineState) -> None:
     try:
         from lawcast_semantic.reranking import load_reranker
 
-        state.record_reranker(load_reranker())
-        service_logger.info('rerank shadow scorer ready (%s)', config.RERANK_MODEL)
+        reranker = load_reranker()
+        state.record_reranker(reranker)
+        service_logger.info(
+            'rerank shadow scorer ready (%s on %s)', config.RERANK_MODEL, reranker.device
+        )
     except Exception as exc:  # noqa: BLE001 - shadow must never break serving
         state.record_rerank_error(f'{type(exc).__name__}: {exc}')
         service_logger.warning('rerank shadow scorer unavailable: %s', exc)
@@ -410,6 +465,7 @@ async def lifespan(app: FastAPI):
     # though the runner module is part of this service.
     from . import update_runner
 
+    log_startup_config()
     # The hook is passed unconditionally; load_engine invokes it only on the
     # searcher phase and only when config.DB_PATH is set (the §4.2 off gate).
     threading.Thread(

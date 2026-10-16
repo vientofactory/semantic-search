@@ -5,6 +5,7 @@ injected predictor, and the light-import gate runs the import in a fresh
 interpreter (torch/faiss must stay out).
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -105,15 +106,88 @@ def test_load_reranker_uses_config_defaults():
         'source = inspect.getsource(reranking.load_reranker)\n'
         "assert 'CrossEncoder' in source\n"
         "assert 'max_length' in source\n"
+        "assert 'resolve_device' in source\n"
         "assert config.RERANK_DEVICE == 'cpu'\n"
         'assert config.RERANK_TOP_K >= 1\n'
         'assert config.RERANK_MAX_LENGTH >= 1\n'
     )
+    # Isolate from a developer `.env` / shell exports: the default case must
+    # be deterministic (same pattern as test_config.run_config).
+    env = {k: v for k, v in os.environ.items() if not k.startswith('LAWCAST_SEMANTIC_RERANK_')}
+    env['LAWCAST_SEMANTIC_ENV_FILE'] = ''
     result = subprocess.run(
         [sys.executable, '-c', code],
         capture_output=True,
         text=True,
         timeout=180,
         cwd=PROJECT_ROOT,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_load_reranker_resolves_auto_and_falls_back_to_cpu(monkeypatch):
+    """`auto` resolves through device.py; a broken accelerator reloads on cpu."""
+    import lawcast_semantic.reranking as reranking_module
+
+    seen_devices: list[str] = []
+
+    class StubPredictor:
+        def __init__(self, model_name, max_length=None, device='cpu'):
+            seen_devices.append(device)
+            if device != 'cpu':
+                raise RuntimeError(f'{device} kernel is missing')
+            self.predict = lambda pairs: [0.1] * len(pairs)
+
+    monkeypatch.setattr(reranking_module, 'CrossEncoder', StubPredictor, raising=False)
+    # `CrossEncoder` is imported inside `load_reranker` from
+    # `sentence_transformers`; stub that import path too.
+    import sys
+    import types
+
+    stub_package = types.ModuleType('sentence_transformers')
+    stub_package.CrossEncoder = StubPredictor  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'sentence_transformers', stub_package)
+
+    def fake_resolve(requested: str) -> str:
+        return 'mps' if requested == 'auto' else requested
+
+    monkeypatch.setattr(reranking_module, 'resolve_device', fake_resolve)
+    reranker = reranking_module.load_reranker('stub-reranker', 'auto')
+    assert reranker.device == 'cpu'
+    assert reranker.requested_device == 'auto'
+    assert seen_devices == ['mps', 'cpu']
+    assert reranker.score('질의', ['a', 'b']) == [0.1, 0.1]
+
+
+def test_load_reranker_keeps_resolved_accelerator(monkeypatch):
+    """A working accelerator pin is used as-is after the probe passes."""
+    import lawcast_semantic.reranking as reranking_module
+
+    seen_devices: list[str] = []
+
+    class StubPredictor:
+        def __init__(self, model_name, max_length=None, device='cpu'):
+            seen_devices.append(device)
+            self.predict = lambda pairs: [0.2] * len(pairs)
+
+        def predict_pairs(self, pairs):
+            return self.predict(pairs)
+
+    import sys
+    import types
+
+    stub_package = types.ModuleType('sentence_transformers')
+    stub_package.CrossEncoder = StubPredictor  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'sentence_transformers', stub_package)
+    monkeypatch.setattr(reranking_module, 'resolve_device', lambda requested: requested)
+    # Probe calls `predictor.predict([[q, d]])`; route it to the stub.
+    original_probe = reranking_module._probe
+    monkeypatch.setattr(
+        reranking_module, '_probe', lambda predictor, device: seen_devices.append(f'probe:{device}')
+    )
+    reranker = reranking_module.load_reranker('stub-reranker', 'mps')
+    assert reranker.device == 'mps'
+    assert reranker.requested_device == 'mps'
+    assert seen_devices[0] == 'mps'
+    monkeypatch.setattr(reranking_module, '_probe', original_probe)

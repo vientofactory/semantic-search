@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import fcntl
 import json
-import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,7 +31,9 @@ if TYPE_CHECKING:
 
     from .app import EngineState
 
-logger = logging.getLogger(__name__)
+from .logging import get_service_logger
+
+logger = get_service_logger(__name__)
 
 
 @contextmanager
