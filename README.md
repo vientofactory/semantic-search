@@ -247,7 +247,7 @@ curl http://127.0.0.1:8300/health              # 상태 확인 (호스트 디버
 | `LAWCAST_SEMANTIC_UPDATE_CRON`        | `0 * * * *` | 갱신 크론 식(분 시 일 월 요일, 로컬시간 — 컨테이너 `TZ`). **빈값 = 스케줄 끔** (구 `UPDATE_INTERVAL_MINUTES` 대체) |
 | `LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE` | off         | 삭제 가드 무효화 (`1`/`true`/`yes`/`on`만 인식, 대소문자·공백 무시)                                                |
 | `LAWCAST_SEMANTIC_MAX_QUERY_LENGTH`   | `500`       | `/search` 최대 질의 길이(자), 초과 시 422                                                                          |
-| `LAWCAST_SEMANTIC_MAX_K`              | `200`       | `/search` k 상한 (단위=청크). 백엔드가 `/health.maxK`로 읽어 사용하므로 재시작만으로 반영, 기본값은 `SIDE_CAR_MAX_CHUNK_K`와 계약 테스트로 고정 |
+| `LAWCAST_SEMANTIC_MAX_K`              | `100`       | `/search` k 상한 (단위=청크). 백엔드가 `/health.maxK`로 읽어 사용하므로 재시작만으로 반영, 기본값은 `SIDE_CAR_MAX_CHUNK_K`와 계약 테스트로 고정 |
 | `LAWCAST_SEMANTIC_DEFAULT_K`          | `5`         | `/search` 기본 창 크기 (`1 ≤ DEFAULT_K ≤ MAX_K`, 위반 시 임포트 실패)                                              |
 | `LAWCAST_SEMANTIC_RERANK_MODEL`       | `nlpai-lab/KURE-Reranker-nano` | 섀도우 리랭커 모델 (stage 4c, CrossEncoder) |
 | `LAWCAST_SEMANTIC_RERANK_MODE`        | `off`       | `off` = 미로드, `shadow` = 서빙 불변·점수 로그만 (그 외는 임포트 실패) |
