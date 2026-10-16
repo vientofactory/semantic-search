@@ -1,8 +1,8 @@
-"""Compute-device selection for the embedding model.
+"""Compute-device selection for the embedding and reranker models.
 
 Single owner of "which hardware should the model run on": `config.DEVICE`
-carries the *requested* device and this module turns it into the device to
-actually load on.
+(embedding) and `config.RERANK_DEVICE` (reranker) carry the *requested*
+device and this module turns it into the device to actually load on.
 
 - An explicit pin (`cpu`, `cuda`, `cuda:1`, `mps`, `xpu`, ...) is honoured
   so an operator can force a choice — including forcing `cpu`.
@@ -66,7 +66,7 @@ def best_available_device(torch_module) -> str:
 
 
 def resolve_device(requested: str | None = None) -> str:
-    """Turn a requested device (`config.DEVICE`) into the device to load on.
+    """Turn a requested device (`DEVICE` / `RERANK_DEVICE`) into the device to load on.
 
     A non-`auto` request is returned as an explicit pin (trimmed/lowercased).
     `auto` (also the result of an empty request) probes torch for hardware

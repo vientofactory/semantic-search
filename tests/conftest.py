@@ -158,6 +158,12 @@ def real_sidecar_process():
         **os.environ,
         'LAWCAST_SEMANTIC_UPDATE_CRON': '',
         'LAWCAST_SEMANTIC_DB_PATH': '',
+        # Pin the shadow reranker to cpu: concurrent embed + rerank passes
+        # on Apple MPS abort the process (Metal command-buffer race), while
+        # the dense-concurrency measurement needs the embedder on its
+        # auto-detected accelerator. A developer `.env` with
+        # LAWCAST_SEMANTIC_RERANK_DEVICE=auto must not leak in here.
+        'LAWCAST_SEMANTIC_RERANK_DEVICE': 'cpu',
         # The skip gate already requires the model in HF_HUB_CACHE; without
         # offline mode the loader still issues HEAD revalidations to
         # huggingface.co, and a degraded network adds retry backoffs to the

@@ -20,7 +20,9 @@ Usage:
         --in /tmp/combined_out.json --out /tmp/rerank_gate_out.json
 
 Output: JSON document to `--out` (or stdout); a cutoff table to stderr.
-CPU-only by default to simulate the production sidecar image.
+Device defaults to `config.RERANK_DEVICE` (`cpu`; pass `--device auto` for
+the CUDA > MPS > XPU probe — single-query measurement only, concurrent
+embed + rerank passes on MPS abort the process).
 """
 
 from __future__ import annotations

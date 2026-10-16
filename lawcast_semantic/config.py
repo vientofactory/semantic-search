@@ -190,8 +190,14 @@ if RERANK_MODE not in {'off', 'shadow'}:
 RERANK_TOP_K = int(os.environ.get('LAWCAST_SEMANTIC_RERANK_TOP_K', '20'))
 if RERANK_TOP_K < 1:
     raise ValueError(f'LAWCAST_SEMANTIC_RERANK_TOP_K must be >= 1 (got {RERANK_TOP_K})')
-# Device the reranker runs on. Default `cpu` matches the production image
-# (no accelerator there); override for local measurement only.
+# The *requested* reranker device: resolved through
+# `lawcast_semantic.device.resolve_device` (same CUDA > MPS > XPU > cpu
+# probe as the embedding device). Default `cpu`: concurrent CrossEncoder
+# + embedding forward passes on Apple MPS abort the process (Metal command
+# buffer race, measured 2026-10-17), so the shared-accelerator pick is
+# opt-in via `LAWCAST_SEMANTIC_RERANK_DEVICE=auto` for single-query
+# measurement only. An unavailable pin degrades to cpu with a warning;
+# the CPU-only production image always resolves to cpu either way.
 RERANK_DEVICE = os.environ.get('LAWCAST_SEMANTIC_RERANK_DEVICE', 'cpu').strip() or 'cpu'
 # Truncation length (tokens) of the cross-encoder input. The served window
 # holds chunks of at most CHUNK_MAX_CHARS characters plus a short query, so

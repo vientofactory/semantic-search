@@ -140,11 +140,19 @@ def run_config_failure(**env_overrides: str) -> str:
 
 def test_rerank_shadow_defaults_to_off_with_bounded_cpu_window():
     """Shadow scoring is opt-in; the default model/window/device are the
-    calibrated pilot values (nano, top-20, cpu for prod parity)."""
+    calibrated pilot values (nano, top-20, cpu — `auto` is opt-in via env
+    and resolves through lawcast_semantic/device.py)."""
     lines = run_config(
         'RERANK_MODEL', 'RERANK_MODE', 'RERANK_TOP_K', 'RERANK_DEVICE', 'RERANK_MAX_LENGTH'
     )
     assert lines == ['nlpai-lab/KURE-Reranker-nano', 'off', '20', 'cpu', '512']
+
+
+def test_rerank_device_auto_opt_in_is_kept_verbatim():
+    """`auto` is a valid request value: resolution happens at load time in
+    `load_reranker`, so the config keeps the spelling untouched."""
+    (line,) = run_config('RERANK_DEVICE', env_overrides={'LAWCAST_SEMANTIC_RERANK_DEVICE': 'auto'})
+    assert line == 'auto'
 
 
 def test_rerank_invalid_mode_fails_fast():
