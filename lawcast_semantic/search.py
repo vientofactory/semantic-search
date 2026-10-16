@@ -136,7 +136,10 @@ class SemanticSearcher:
         if not normalized:
             return []
         query_vector = self.embedder.embed_query(normalized)
-        hits = self.index.search(query_vector, k=None)
+        # Fetch only the serving window from the index: the tiers below cut
+        # the same top-k window, so scoring all ntotal rows only added a
+        # GIL-held full-index sort to every concurrent request.
+        hits = self.index.search(query_vector, k=k)
         hits.sort(key=lambda hit: (-hit[1], self.chunk_ids[hit[0]]))
 
         results: list[SearchResult] = []

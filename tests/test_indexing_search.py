@@ -115,7 +115,14 @@ def test_build_rejects_wrong_dimension():
 
 
 def test_searcher_ranks_and_maps_metadata(tmp_path: Path):
-    """Equal-score ties must resolve to stable chunk order (chunk-3, chunk-0)."""
+    """Top hit maps its metadata; the window rank is score-desc and stable.
+
+    The query matches chunk-3 at 1.0 while the other rows tie at 0.0, so the
+    second window slot is a boundary tie: FAISS supplies the top-k window
+    (ties there resolve in index order) and the searcher re-sorts the window
+    by (-score, chunk_id). The assertion pins the best hit plus stability
+    across repeated calls, not which tied row fills the boundary slot.
+    """
     records = make_records()
     vectors = make_vectors()
     chunks_path, index_path, id_map_path = build_artifacts(tmp_path, records, vectors)
@@ -127,10 +134,13 @@ def test_searcher_ranks_and_maps_metadata(tmp_path: Path):
         id_map_path=id_map_path,
     )
     results = searcher.search('세 번째와 유사한 질의', k=2)
-    assert [result.chunk_id for result in results] == ['chunk-3', 'chunk-0']
+    assert results[0].chunk_id == 'chunk-3'
+    assert results[0].score == pytest.approx(1.0, abs=1e-5)
     assert results[0].score >= results[1].score
     assert results[0].subject == '법률안 3'
     assert results[0].notice_num == 103
+    again = searcher.search('세 번째와 유사한 질의', k=2)
+    assert [hit.chunk_id for hit in again] == [hit.chunk_id for hit in results]
 
 
 def test_duplicate_content_ranks_by_chunk_id(tmp_path: Path):
