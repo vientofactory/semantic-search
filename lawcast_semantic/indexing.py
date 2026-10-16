@@ -85,8 +85,10 @@ class VectorIndex:
     def search(self, query_vector: np.ndarray, k: int | None = None) -> list[tuple[int, float]]:
         """Return (row_position, cosine_score) pairs sorted by score desc.
 
-        k=None scores every vector. Ties are broken deterministically by row
-        position; SemanticSearcher re-sorts by chunk_id before cutting top-k so
+        k=None scores every vector; otherwise only the top-k rows are fetched
+        from FAISS so a serving query never pays for (or Python-sorts) the
+        whole index. Ties are broken deterministically by row position;
+        SemanticSearcher re-sorts by chunk_id before cutting top-k so
         duplicate-content chunks cannot flip order between runs.
         """
         if self.index.ntotal == 0:
@@ -95,7 +97,13 @@ class VectorIndex:
             raise ValueError(f'k must be >= 1, got {k}')
         query = np.ascontiguousarray(query_vector.reshape(1, -1), dtype='float32')
         query /= max(float(np.linalg.norm(query)), 1e-12)
-        scores, positions = self.index.search(query, self.index.ntotal)
-        hits = [(int(pos), float(score)) for pos, score in zip(positions[0], scores[0])]
+        # Push the window down into FAISS: a serving k (<= MAX_K) fetches a
+        # handful of rows instead of all ntotal, which also keeps the GIL-held
+        # Python sort below off the concurrent-request path.
+        fetch = self.index.ntotal if k is None else min(k, self.index.ntotal)
+        scores, positions = self.index.search(query, fetch)
+        hits = [
+            (int(pos), float(score)) for pos, score in zip(positions[0], scores[0]) if int(pos) >= 0
+        ]
         hits.sort(key=lambda hit: (-hit[1], hit[0]))
-        return hits if k is None else hits[:k]
+        return hits
