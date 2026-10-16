@@ -161,7 +161,7 @@ CHUNK_MIN_CHARS = 40
 #   so changing it here requires changing that constant in the same commit.
 # - DEFAULT_K: window served when the caller omits `k`.
 MAX_QUERY_LENGTH = int(os.environ.get('LAWCAST_SEMANTIC_MAX_QUERY_LENGTH', '500'))
-MAX_K = int(os.environ.get('LAWCAST_SEMANTIC_MAX_K', '200'))
+MAX_K = int(os.environ.get('LAWCAST_SEMANTIC_MAX_K', '100'))
 DEFAULT_K = int(os.environ.get('LAWCAST_SEMANTIC_DEFAULT_K', '5'))
 if MAX_QUERY_LENGTH < 1:
     raise ValueError(f'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH must be >= 1 (got {MAX_QUERY_LENGTH})')

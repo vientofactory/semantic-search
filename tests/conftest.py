@@ -29,7 +29,7 @@ SERVE_TIMEOUT = 15.0
 
 # The sidecar request bounds are env-injectable (lawcast_semantic/config.py),
 # and several HTTP contract tests assert the code defaults (500-char query,
-# k <= 200). Pop any shell export before any test module imports
+# k <= 100). Pop any shell export before any test module imports
 # `service.app`, so a developer's environment can never shift them.
 for _bound_env in (
     'LAWCAST_SEMANTIC_MAX_QUERY_LENGTH',

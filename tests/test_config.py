@@ -175,10 +175,10 @@ def test_min_similarity_above_clear_fails_fast():
 def test_sidecar_request_bounds_default_to_the_wire_contract_values():
     """The sidecar's `/search` bounds live here (env-injectable); the code
     defaults are the pinned wire contract: query <= 500 chars, chunk window
-    1..200 defaulting to 5 (MAX_K's default is pinned against the backend's
+    1..100 defaulting to 5 (MAX_K's default is pinned against the backend's
     SIDE_CAR_MAX_CHUNK_K by the cross-language contract spec)."""
     lines = run_config('MAX_QUERY_LENGTH', 'MAX_K', 'DEFAULT_K')
-    assert lines == ['500', '200', '5']
+    assert lines == ['500', '100', '5']
 
 
 def test_sidecar_request_bounds_env_overrides():
