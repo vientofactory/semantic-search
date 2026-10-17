@@ -67,8 +67,25 @@ ALIASES: dict[str, str] = {
     # Criminal / family
     # NOTE: '스토킹처벌법' is deliberately absent - its raw form already ranks
     # the bill 1st and expanding it measured 1 -> 2, so the entry was removed.
+    # Re-measured on BGE-m3-ko (full corpus, 2026-10-17): raw 13 -> expanded
+    # 17, still a regression, so the exclusion stands on the new baseline too.
     '청탁금지법': '부정청탁 및 금품등 수수의 금지에 관한 법률',
     '양육비이행법': '양육비 이행확보 및 지원에 관한 법률',
+    # BGE-gap abbreviations (added 2026-10-17): BGE-m3-ko still ranks these
+    # 3-4 digits on the full corpus, so they are alias problems, not ranking
+    # problems. Each entry measured raw -> expanded on the BGE full index:
+    # `예보법` 3128 -> 48, `KIC` 2447 -> 14, `ODA`/`개발원조` 4694 -> 62,
+    # `보이스피싱` 147 -> 4, `요양원` 902 -> 100.
+    # Deliberately NOT added: `고준위방폐물` (74 -> 52, marginal, dict kept
+    # tight) and `통화녹음` (never fires: the colloquial query continues with
+    # `해서`, which is not a trailing particle - needs query rewriting, not
+    # an alias entry).
+    '예보법': '예금자보호법',
+    'KIC': '한국투자공사법',
+    'ODA': '국제개발협력기본법',
+    '개발원조': '국제개발협력',
+    '보이스피싱': '전기통신금융사기',
+    '요양원': '노인장기요양',
 }
 
 # Trailing particles that may follow an alias without making it a different

@@ -84,12 +84,13 @@ EMBEDDINGS_PATH = ARTIFACTS_DIR / 'embeddings.npz'
 FAISS_INDEX_PATH = ARTIFACTS_DIR / 'faiss.index'
 ID_MAP_PATH = ARTIFACTS_DIR / 'id_map.json'
 
-# Korean-specialized sentence embedding model. nlpai-lab/KURE-v1 is a Korean
+# Korean-specialized sentence embedding model. dragonkue/BGE-m3-ko is a Korean
 # retrieval embedding model (bge-m3 base, 1024-dim, 8192-token window) that
-# topped the Korean retrieval benchmarks in the A/B that adopted it — see
-# README for the model-selection rationale and comparison numbers.
+# beat KURE-v1 on the realistic holdout set (+0.085 MRR) at main-parity in
+# the full-corpus A/B — see README for the model-selection rationale and
+# agent_memories/45-model-ab-koe5-bgem3ko/notes.md for the numbers.
 # Override with LAWCAST_SEMANTIC_MODEL to swap (e.g. jhgan/ko-sbert-sts).
-MODEL_NAME = os.environ.get('LAWCAST_SEMANTIC_MODEL', 'nlpai-lab/KURE-v1')
+MODEL_NAME = os.environ.get('LAWCAST_SEMANTIC_MODEL', 'dragonkue/BGE-m3-ko')
 # The *requested* embedding device: 'auto' (default) probes for hardware
 # faster than CPU (CUDA > Apple MPS > Intel XPU) at model-load time and
 # falls back to cpu — see lawcast_semantic/device.py, the single owner of

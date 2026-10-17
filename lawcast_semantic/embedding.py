@@ -1,7 +1,7 @@
 """Stage 2: tokenization and embedding extraction.
 
 Wraps a Korean-specialized sentence-transformers model (default:
-`nlpai-lab/KURE-v1`, Korean retrieval-tuned bge-m3) and exposes
+`dragonkue/BGE-m3-ko`, Korean retrieval-tuned bge-m3) and exposes
 both the tokenizer step (token counts / truncation against the model's
 max sequence length) and the embedding step (pooled vectors,
 L2-normalized for cosine similarity).
