@@ -13,8 +13,8 @@
 
 [project]
 name = "lawcast-semantic-search"
-version = "2.7.1"
-description = "LawCast semantic search pipeline and FastAPI sidecar (KURE-v1 + FAISS)"
+version = "2.8.0"
+description = "LawCast semantic search pipeline and FastAPI sidecar (BGE-m3-ko + FAISS)"
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }

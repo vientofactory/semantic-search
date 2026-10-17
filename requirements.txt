@@ -5,7 +5,7 @@
 # builds; after changing this file and re-running the tests, regenerate it:
 #   .venv/bin/pip freeze > requirements.lock
 #
-# Korean embedding model (nlpai-lab/KURE-v1) is downloaded on first use
+# Korean embedding model (dragonkue/BGE-m3-ko) is downloaded on first use
 # from HuggingFace; no extra install needed.
 torch>=2.6
 sentence-transformers>=6.1

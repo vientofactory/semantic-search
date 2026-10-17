@@ -66,6 +66,28 @@ def test_latin_alias_matches_any_case():
     assert expand_query('Ai기본법').text == official
 
 
+def test_bge_gap_abbreviations_expand_to_official_names():
+    """BGE-m3-ko still ranks these 3-4 digits raw (full corpus, 2026-10-17)."""
+    assert expand_query('예보법 개정').text == '예금자보호법 개정'
+    assert expand_query('KIC 관련법 개정').text == '한국투자공사법 관련법 개정'
+    assert expand_query('kic 관련법 개정').text == '한국투자공사법 관련법 개정'
+    assert expand_query('개발원조 ODA 예산').text == '국제개발협력 국제개발협력기본법 예산'
+    assert expand_query('보이스피싱 특별법').text == '전기통신금융사기 특별법'
+    assert expand_query('요양원 비용').text == '노인장기요양 비용'
+
+
+def test_bge_gap_aliases_take_trailing_particles():
+    assert expand_query('예보법은 개정되나요').text == '예금자보호법은 개정되나요'
+    assert expand_query('KIC은').text == '한국투자공사법은'
+
+
+def test_excluded_aliases_stay_untouched():
+    """`스토킹처벌법` regressed on BGE too (13 -> 17); `통화녹음` needs
+    query rewriting, not an alias entry. Neither may fire."""
+    assert expand_query('스토킹처벌법 강화').matched == ()
+    assert expand_query('통화 녹음해서 증거로 써도 되나요?').matched == ()
+
+
 def test_multiword_alias_tolerates_missing_space():
     assert expand_query('인공지능기본법').text == (
         '인공지능 발전과 신뢰 기반 조성 등에 관한 기본법'

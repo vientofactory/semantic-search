@@ -26,11 +26,14 @@ flowchart LR
 따라 달라집니다. 고정 수치가 아니라 산출 시점에 `/health.indexedChunks`나 아티팩트 파일에서 직접
 확인하세요.
 
-## 임베딩 모델 ([nlpai-lab/KURE-v1](https://huggingface.co/nlpai-lab/KURE-v1))
+## 임베딩 모델 ([dragonkue/BGE-m3-ko](https://huggingface.co/dragonkue/BGE-m3-ko))
 
-- **채택 근거**: 리트리벌(질의 → 문서 순위) 목적으로 학습되어 의미 검색과 목적이 일치하고
-  홀드아웃 A/B에서 구어체·동의어 질의가 개선되며 제목/본문 평가셋 전 지표가 무회귀한 결과로
-  채택했습니다. 긴 토큰 윈도우 덕분에 청크 절단도 발생하지 않습니다.
+- **채택 근거**: 전체 118,973 청크 3자 대결(live KURE-v1 vs BGE-m3-ko vs KoE5-prefix,
+  40쿼리)에서 현실 질의 분포인 홀드아웃(약어/구어체/유의어) MRR이 0.147 → 0.232(+0.085,
+  top-1 3건 추가)로 개선되고, 쉬운 메인 세트는 동률(r@5 0.812 동일)인 결과로 채택했습니다
+  (`agent_memories/45-model-ab-koe5-bgem3ko/notes.md` §8). 긴 토큰 윈도우(8192) 덕분에
+  청크 절단도 발생하지 않습니다 (전체 코퍼스 최대 172토큰). 이전 모델 `nlpai-lab/KURE-v1`도
+  동일 bge-m3 기반 1024차원이라 아티팩트 레이아웃·서빙 코드 변경 없이 교체했습니다.
 - **교체**: `LAWCAST_SEMANTIC_MODEL`로 다른 모델과 A/B할 수 있습니다 (예: `jhgan/ko-sbert-sts`,
   768차원 / 128 토큰). 모델을 바꾸면 인덱스도 함께 바뀌므로 1 → 3 전체 재구축이 필요하고
   증분 갱신은 모델 교체를 명시적 오류로 거부합니다.
@@ -385,7 +388,7 @@ expand_query('산안법 개정')  # QueryExpansion(text='산업안전보건법 �
 
 ### Stage 2 — 토크나이징 + 임베딩 추출
 
-- `KoreanEmbedder`가 설정된 모델 (기본 `nlpai-lab/KURE-v1`)을 sentence-transformers로 로드합니다.
+- `KoreanEmbedder`가 설정된 모델 (기본 `dragonkue/BGE-m3-ko`)을 sentence-transformers로 로드합니다.
   디바이스·배치는 `LAWCAST_SEMANTIC_DEVICE` (기본 `auto`) / `LAWCAST_SEMANTIC_BATCH`로 조절하세요.
   **`auto`는 모델 로드 시 CPU보다 우수한 연산 하드웨어를 탐지해 사용합니다** (CUDA > Apple MPS >
   Intel XPU 순으로, `lawcast_semantic/device.py`가 단일 소유): 없으면 `cpu`로 동일하게 동작합니다.
