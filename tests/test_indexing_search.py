@@ -316,3 +316,20 @@ def test_search_tiered_returns_nothing_when_everything_is_unrelated(tmp_path: Pa
 
     assert outcome.results == []
     assert outcome.weak_results == []
+
+
+def test_sq8_round_trip_and_index_type_guard(tmp_path):
+    vectors = make_vectors()
+    index = VectorIndex(vectors.shape[1], 'sq8')
+    index.build(vectors)
+    index_path, id_map_path = tmp_path / 'faiss.index', tmp_path / 'id_map.json'
+    index.save(index_path, id_map_path, [f'chunk-{i}' for i in range(4)])
+    loaded, payload = VectorIndex.load(index_path, id_map_path)
+    assert payload['index_type'] == loaded.index_type == 'sq8'
+    position, score = loaded.search(vectors[2], k=1)[0]
+    assert position == 2
+    assert score == pytest.approx(1, abs=0.01)
+    payload['index_type'] = 'flat'
+    id_map_path.write_text(json.dumps(payload), encoding='utf-8')
+    with pytest.raises(ValueError, match='does not match declared type'):
+        VectorIndex.load(index_path, id_map_path)

@@ -81,7 +81,9 @@ def artifact_paths(root: Path) -> dict:
     }
 
 
-def build_full_artifacts(notices: list[dict], root: Path, *, legacy_npz: bool = False) -> dict:
+def build_full_artifacts(
+    notices: list[dict], root: Path, *, legacy_npz: bool = False, index_type: str = 'flat'
+) -> dict:
     """Replicate scripts 01-03 (a full rebuild) into `root`; returns the paths.
 
     `legacy_npz=True` writes the pre-provenance npz format (no
@@ -104,7 +106,7 @@ def build_full_artifacts(notices: list[dict], root: Path, *, legacy_npz: bool = 
             [compute_chunk_text_digest(record) for record in records]
         )
     np.savez_compressed(paths['embeddings_path'], **members)
-    index = VectorIndex(embeddings.shape[1])
+    index = VectorIndex(embeddings.shape[1], index_type)
     index.build(embeddings)
     index.save(
         paths['index_path'],
@@ -175,6 +177,18 @@ def test_incremental_equals_full_rebuild(tmp_path: Path):
     assert result_snapshot(load_searcher(inc_paths), queries) == result_snapshot(
         load_searcher(full_paths), queries
     )
+
+
+def test_incremental_update_preserves_opt_in_sq8(tmp_path: Path):
+    first, second = make_notice(100), make_notice(200)
+    paths = build_full_artifacts([first], tmp_path, index_type='sq8')
+    report = run_update([first, second], StubEmbedder(), paths)
+    searcher = load_searcher(paths)
+    assert report.wrote_artifacts
+    assert report.embedded_count > 0
+    assert searcher.index.index_type == 'sq8'
+    assert searcher.index.index.ntotal == report.chunks_total
+    assert {record['notice_num'] for record in searcher.chunks_by_id.values()} == {100, 200}
 
 
 def test_update_scenario_reembeds_only_changed_notice(tmp_path: Path):
