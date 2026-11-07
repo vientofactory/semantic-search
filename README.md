@@ -4,7 +4,7 @@ LawCast의 입법예고를 문장의 의미로 찾는 검색 엔진입니다. �
 
 검색 대상은 SQLite DB의 `notice_archives.proposalReason`(제안이유 및 주요내용)과 `notice_archive_snapshot_states.ai_summary`입니다. 원문을 섹션과 문장 단위로 나누고 AI 요약은 별도 섹션으로 덧붙입니다. 각 청크를 임베딩할 때 제목을 함께 넣으며 제안이유가 없는 공고는 제목 청크를 유지합니다.
 
-기본 임베딩 모델은 `dragonkue/BGE-m3-ko`이고 L2 정규화한 벡터를 FAISS `IndexFlatIP`로 검색합니다. 질의에도 같은 모델을 쓰며, `중처법` 같은 약어는 사전에 등록된 정식 법안명으로 확장합니다.
+기본 임베딩 모델은 `dragonkue/BGE-m3-ko`이고 L2 정규화한 벡터를 FAISS `IndexFlatIP`로 검색합니다. 질의에도 같은 모델을 쓰며, `중처법`, `집시법` 같은 약어는 임베딩 전에 사전에 등록된 법률명으로 확장합니다. 예를 들어 `집시법상 집회 신고`는 `집회 및 시위에 관한 법률상 집회 신고`로 검색합니다.
 
 ```mermaid
 flowchart TB
