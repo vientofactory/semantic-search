@@ -5,27 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from lawcast_semantic.omp_env import use_single_threaded_omp  # noqa: E402
-
-use_single_threaded_omp()
-
-from lawcast_semantic import config  # noqa: E402
-from lawcast_semantic.aliases import expand_query  # noqa: E402
-from lawcast_semantic.preprocess import normalize_text  # noqa: E402
-from lawcast_semantic.shadow import (  # noqa: E402
-    REVISION,
-    TEACHER,
-    layer_positions,
-    measure,
-    validate_checkpoint,
-)
-
+SHADOW_ENABLED_ENV = 'LAWCAST_SEMANTIC_DISTILLATION_SHADOW_ENABLED'
 WEIGHTS = Path(__file__).with_name('assets') / 'bge20-projection.pt'
 WEIGHT_SHA256 = 'dfb3ef6afa71450814fc5ccab38997d20899618bb0e63a832eb8532e248a24c7'
 
@@ -43,6 +28,27 @@ def main():
         '--rerank', action='store_true', help='Also run the pinned reranker offline'
     )
     args = parser.parse_args()
+    # Check the process environment before config can read a dotenv file.
+    if os.environ.get(SHADOW_ENABLED_ENV) != '1':
+        parser.error(f'distillation shadow replay is disabled; set {SHADOW_ENABLED_ENV}=1')
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    from lawcast_semantic.omp_env import use_single_threaded_omp
+
+    use_single_threaded_omp()
+
+    from lawcast_semantic import config
+    from lawcast_semantic.aliases import expand_query
+    from lawcast_semantic.preprocess import normalize_text
+    from lawcast_semantic.shadow import (
+        REVISION,
+        TEACHER,
+        layer_positions,
+        measure,
+        validate_checkpoint,
+    )
+
     rows = json.loads(args.queries.read_text(encoding='utf-8'))
     if not (1 <= len(rows) <= 50 and 1 <= args.repeat <= 5 and 1 <= args.k <= config.MAX_K):
         parser.error('use 1–50 fixed probes, 1–5 repetitions and a valid serving window')
