@@ -5,6 +5,7 @@ wiring that makes `SemanticSearcher.search` embed the expanded query text.
 """
 
 import numpy as np
+import pytest
 
 from lawcast_semantic.aliases import ALIASES, expand_query
 from lawcast_semantic.search import SemanticSearcher
@@ -14,6 +15,50 @@ def test_alias_expands_to_official_bill_name():
     assert expand_query('중처법').text == '중대재해 처벌 등에 관한 법률'
     assert expand_query('산안법').text == '산업안전보건법'
     assert expand_query('전상법').text == '전자상거래 등에서의 소비자보호에 관한 법률'
+
+
+@pytest.mark.parametrize(
+    ('alias', 'official'),
+    [
+        ('집시법', '집회 및 시위에 관한 법률'),
+        ('형소법', '형사소송법'),
+        ('정자법', '정치자금법'),
+        ('아청법', '아동·청소년의 성보호에 관한 법률'),
+        ('상임법', '상가건물 임대차보호법'),
+        ('금소법', '금융소비자 보호에 관한 법률'),
+        ('표시광고법', '표시·광고의 공정화에 관한 법률'),
+        ('화평법', '화학물질의 등록 및 평가 등에 관한 법률'),
+    ],
+)
+def test_added_law_aliases_expand_to_corpus_titles(alias, official):
+    expanded = expand_query(alias)
+    assert expanded.text == official
+    assert expanded.matched == (alias,)
+
+
+def test_added_aliases_keep_punctuation_particles_and_query_context():
+    expanded = expand_query('「집시법」과 집시법상 신고 의무, 정자법은?')
+    assert expanded.text == (
+        '「집회 및 시위에 관한 법률」과 집회 및 시위에 관한 법률상 신고 의무, 정치자금법은?'
+    )
+    assert expanded.matched == ('집시법', '정자법')
+
+
+@pytest.mark.parametrize(
+    'query',
+    [
+        '집시법률 개정',
+        '비집시법 위반',
+        '집회 및 시위에 관한 법률 개정',
+        '국계법 개정',
+        '임대차3법 개정',
+        '민소법 전자 송달',
+    ],
+)
+def test_new_entries_do_not_rewrite_substrings_full_titles_or_excluded_aliases(query):
+    expanded = expand_query(query)
+    assert expanded.text == query
+    assert expanded.matched == ()
 
 
 def test_matched_reports_declared_alias():
@@ -136,8 +181,8 @@ def test_searcher_embeds_the_expanded_query_text():
     embedder = _RecordingEmbedder()
     searcher = SemanticSearcher(embedder, _EmptyIndex(), [], {})
 
-    assert searcher.search('중처법 위반', k=3) == []
-    assert embedder.texts == ['중대재해 처벌 등에 관한 법률 위반']
+    assert searcher.search('집시법상 집회 신고', k=3) == []
+    assert embedder.texts == ['집회 및 시위에 관한 법률상 집회 신고']
 
 
 def test_searcher_leaves_plain_queries_untouched():
