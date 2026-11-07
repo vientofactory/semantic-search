@@ -19,7 +19,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run-from-source bootstrap
 from lawcast_semantic import config  # noqa: E402
-from lawcast_semantic.indexing import VectorIndex  # noqa: E402
+from lawcast_semantic.indexing import INDEX_TYPES, VectorIndex  # noqa: E402
 
 
 def main() -> None:
@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument('--embeddings', type=Path, default=config.EMBEDDINGS_PATH)
     parser.add_argument('--out', type=Path, default=config.FAISS_INDEX_PATH)
     parser.add_argument('--id-map', type=Path, default=config.ID_MAP_PATH)
+    parser.add_argument('--index-type', choices=INDEX_TYPES, default='flat')
     args = parser.parse_args()
 
     payload = np.load(args.embeddings, allow_pickle=False)
@@ -38,12 +39,12 @@ def main() -> None:
         key: payload[key].item() for key in ('chunks_fingerprint', 'model_name') if key in payload
     }
 
-    index = VectorIndex(embeddings.shape[1])
+    index = VectorIndex(embeddings.shape[1], args.index_type)
     index.build(embeddings)
     index.save(args.out, args.id_map, chunk_ids, meta=meta)
 
     print(f'vectors indexed     : {index.index.ntotal}')
-    print('index type          : IndexFlatIP (cosine over normalized vectors)')
+    print(f'index type          : {index.index_type} (inner product over normalized vectors)')
     print(f'index dim           : {index.dimension}')
     print(f'index file          : {args.out} ({args.out.stat().st_size / 1024:.1f} KiB)')
     print(f'id map              : {args.id_map} ({len(chunk_ids)} entries)')

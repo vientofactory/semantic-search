@@ -289,6 +289,14 @@ def _id_map_in_sync(id_map_path: Path, fingerprint: str) -> bool:
     return payload.get('chunks_fingerprint') == fingerprint
 
 
+def _existing_index_type(id_map_path: Path) -> str:
+    try:
+        payload = json.loads(id_map_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 'flat'
+    return payload.get('index_type', 'flat')
+
+
 def _write_artifacts(
     records: Sequence[dict],
     merged: np.ndarray,
@@ -308,6 +316,9 @@ def _write_artifacts(
     chunk_ids = [record['chunk_id'] for record in records]
     fingerprint = compute_chunks_fingerprint(records)
 
+    index = VectorIndex(merged.shape[1], _existing_index_type(id_map_path))
+    index.build(merged)
+
     embeddings_path.parent.mkdir(parents=True, exist_ok=True)
     # np.savez_compressed appends '.npz' unless the name already ends with it.
     npz_tmp = embeddings_path.with_name(embeddings_path.stem + '.tmp.npz')
@@ -321,8 +332,6 @@ def _write_artifacts(
     )
     os.replace(npz_tmp, embeddings_path)
 
-    index = VectorIndex(merged.shape[1])
-    index.build(merged)
     index_tmp = index_path.with_name(index_path.name + '.tmp')
     id_map_tmp = id_map_path.with_name(id_map_path.name + '.tmp')
     index.save(

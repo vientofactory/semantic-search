@@ -1,8 +1,7 @@
 """Stage 3: FAISS index construction and persistence.
 
-Uses `faiss.IndexFlatIP` over L2-normalized vectors, which makes inner
-product equal to cosine similarity. Exact search is fine at LawCast scale
-(tens of thousands of chunks); swap in an IVF/PQ index later if needed.
+The default FlatIP index scores normalized vectors exactly. The optional
+SQ8 index scans scalar-quantized approximations of the same vectors.
 """
 
 from __future__ import annotations
@@ -14,13 +13,23 @@ from pathlib import Path
 import faiss
 import numpy as np
 
+INDEX_TYPES = ('flat', 'sq8')
+
 
 class VectorIndex:
     """Cosine-similarity vector index with JSON chunk-id mapping."""
 
-    def __init__(self, dimension: int) -> None:
+    def __init__(self, dimension: int, index_type: str = 'flat') -> None:
         self.dimension = int(dimension)
-        self.index = faiss.IndexFlatIP(self.dimension)
+        if index_type not in INDEX_TYPES:
+            raise ValueError(f'unsupported index type {index_type!r}')
+        self.index_type = index_type
+        if index_type == 'sq8':
+            self.index = faiss.IndexScalarQuantizer(
+                self.dimension, faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_INNER_PRODUCT
+            )
+        else:
+            self.index = faiss.IndexFlatIP(self.dimension)
 
     @staticmethod
     def _as_normalized_matrix(embeddings: np.ndarray) -> np.ndarray:
@@ -39,6 +48,10 @@ class VectorIndex:
                 f'embedding dim {vectors.shape[1]} does not match index dim {self.dimension}'
             )
         self.index.reset()
+        if len(vectors) == 0:
+            return
+        if self.index_type == 'sq8':
+            self.index.train(vectors)
         self.index.add(vectors)
 
     def save(
@@ -65,6 +78,7 @@ class VectorIndex:
         # ticks and boot repair) funnels through save(), so id_map.json
         # records when this set was last written. Stamped after merging
         # caller meta so the value always describes this write.
+        payload['index_type'] = self.index_type
         payload['updated_at'] = datetime.now(UTC).isoformat()
         id_map_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
@@ -77,9 +91,19 @@ class VectorIndex:
         written by :meth:`save` — absent only for pre-stamp legacy sets).
         """
         index = faiss.read_index(str(index_path))
-        wrapper = cls(index.d)
-        wrapper.index = index
         payload = json.loads(id_map_path.read_text(encoding='utf-8'))
+        index_type = payload.get('index_type', 'flat')
+        if index.metric_type != faiss.METRIC_INNER_PRODUCT or not (
+            (index_type == 'flat' and isinstance(index, faiss.IndexFlatIP))
+            or (
+                index_type == 'sq8'
+                and isinstance(index, faiss.IndexScalarQuantizer)
+                and index.sq.qtype == faiss.ScalarQuantizer.QT_8bit
+            )
+        ):
+            raise ValueError(f'FAISS index does not match declared type {index_type!r}')
+        wrapper = cls(index.d, index_type)
+        wrapper.index = index
         return wrapper, payload
 
     def search(self, query_vector: np.ndarray, k: int | None = None) -> list[tuple[int, float]]:
