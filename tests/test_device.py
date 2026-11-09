@@ -139,7 +139,7 @@ class StubModel:
         return np.ones((len(texts), 4), dtype='float32')
 
 
-embedding.SentenceTransformer = StubModel
+embedding._ProfiledSentenceTransformer = StubModel
 
 if mode == 'probe':
     import torch

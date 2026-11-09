@@ -9,8 +9,9 @@ fire) lives in `conftest.py`.
 
 import statistics
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from time import perf_counter, sleep, time
+from time import perf_counter, sleep
 
 import httpx
 import pytest
@@ -28,16 +29,18 @@ from lawcast_semantic import config
 
 
 def test_concurrent_searches_overlap_and_all_succeed(monkeypatch):
-    """N simultaneous /search requests must overlap, not queue one by one.
+    """All eight handlers reach the same rendezvous before any may return."""
+    clients = 8
+    rendezvous = threading.Barrier(clients, timeout=5)
 
-    The stub searcher sleeps 0.4s per call: fully serialized the batch would
-    take 8 x 0.4s = 3.2s, so a non-blocking sidecar must finish well under
-    half that while actually running several searches at once.
-    """
-    delay, clients = 0.4, 8
-    searcher = StubSearcher(delay=delay)
-    with sidecar_server(monkeypatch, loader=ready_loader(searcher)) as base:
-        responses, latencies, wall = fire_concurrently(
+    class RendezvousSearcher(StubSearcher):
+        def search(self, query, k=5):
+            rendezvous.wait()
+            return super().search(query, k)
+
+    with sidecar_server(monkeypatch, loader=ready_loader(RendezvousSearcher())) as base:
+        wait_until_ready(base, timeout=5)
+        responses, _, wall = fire_concurrently(
             base,
             [
                 {'path': '/search', 'params': {'query': f'세입자 보호 {i}', 'k': 3}}
@@ -45,72 +48,39 @@ def test_concurrent_searches_overlap_and_all_succeed(monkeypatch):
             ],
         )
 
-    serial_budget = delay * clients
     codes = [response.status_code for response in responses]
-    print(
-        f'\n[concurrent /search] codes={codes} wall={wall:.2f}s '
-        f'serial_budget={serial_budget:.2f}s '
-        f'latencies={[round(latency, 2) for latency in latencies]} '
-        f'max_in_flight={searcher.max_in_flight}',
-    )
+    print(f'\n[concurrent /search] rendezvous={clients} codes={codes} wall={wall:.2f}s')
     assert codes == [200] * clients
     assert all(response.json()['results'] for response in responses)
-    # Direct overlap proof: at least half the batch ran their search at once.
-    assert searcher.max_in_flight >= clients // 2
-    # Wall time must stay far below the fully-serialized budget.
-    assert wall < serial_budget / 2
-    assert max(latencies) < serial_budget / 2
 
 
-def test_health_responds_fast_while_slow_search_runs(monkeypatch):
-    """The state lock must not be held across a slow search (snapshot pattern).
+def test_health_responds_while_search_is_blocked(monkeypatch):
+    """Health must finish before a deliberately blocked search is released."""
+    entered = threading.Event()
+    release = threading.Event()
 
-    With a 1.5s search in flight, /health requests are measured individually:
-    if `searcher.search()` ran under `EngineState._lock` each health check
-    would stall for the rest of the search.
-    """
-    searcher = StubSearcher(delay=1.5)
-    with sidecar_server(monkeypatch, loader=ready_loader(searcher)) as base:
-        slow: dict = {}
+    class BlockingSearcher(StubSearcher):
+        def search(self, query, k=5):
+            entered.set()
+            assert release.wait(10)
+            return super().search(query, k)
 
-        def slow_search() -> None:
-            started = perf_counter()
-            slow['response'] = httpx.get(
-                f'{base}/search',
-                params={'query': '느린 질의'},
-                timeout=SERVE_TIMEOUT,
-            )
-            slow['latency'] = perf_counter() - started
-
-        background = threading.Thread(target=slow_search, daemon=True)
-        background.start()
-
-        deadline = time() + 5
-        while searcher.in_flight == 0 and time() < deadline:
-            sleep(0.01)
-        assert searcher.in_flight == 1, 'slow search never reached the handler'
-
-        health_client = httpx.Client(timeout=5)
-        try:
-            health_latencies = []
-            for _ in range(5):
-                started = perf_counter()
-                response = health_client.get(f'{base}/health')
-                health_latencies.append(perf_counter() - started)
-                assert response.status_code == 200
-                assert response.json()['status'] == 'ready'
-        finally:
-            health_client.close()
-        background.join(timeout=SERVE_TIMEOUT)
-
-    print(
-        f'\n[health during slow search] health_latencies='
-        f'{[round(latency * 1000, 1) for latency in health_latencies]}ms '
-        f'slow_search_latency={slow["latency"]:.2f}s',
-    )
-    assert slow['response'].status_code == 200
-    # 0.5s vs the 1.5s search: health would block that long if a lock leaked.
-    assert max(health_latencies) < 0.5
+    with sidecar_server(monkeypatch, loader=ready_loader(BlockingSearcher())) as base:
+        wait_until_ready(base, timeout=5)
+        with (
+            httpx.Client(base_url=base, timeout=SERVE_TIMEOUT, trust_env=False) as client,
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            slow = pool.submit(client.get, '/search', params={'query': '느린 질의'})
+            try:
+                assert entered.wait(5)
+                health = client.get('/health', timeout=3)
+                assert health.status_code == 200
+                assert health.json()['status'] == 'ready'
+                assert not slow.done()
+            finally:
+                release.set()
+            assert slow.result().status_code == 200
 
 
 def test_loading_engine_fails_fast_under_concurrent_load(monkeypatch):
@@ -139,8 +109,6 @@ def test_loading_engine_fails_fast_under_concurrent_load(monkeypatch):
         health = httpx.get(f'{base}/health', timeout=5).json()
         assert [response.status_code for response in responses] == [503] * 6
         assert health['status'] == 'loading'
-        assert max(latencies) < 1.0, f'503 responses queued: {[round(x, 2) for x in latencies]}'
-        assert wall < 2.0
 
         release.set()
         wait_until_ready(base, timeout=5, interval=0.05)
@@ -220,15 +188,10 @@ def _real_engine_available() -> bool:
     reason='needs artifacts/ + cached embedding model',
 )
 def test_real_engine_serves_concurrent_queries():
-    """Real engine behind the production uvicorn CMD: concurrent batch vs baseline.
+    """Compare real HTTP ranks under serial and overlapping MPS or CPU traffic.
 
-    Spawns the sidecar as a separate process (like Docker), waits for the
-    engine to become ready, then measures three rounds of (sequential
-    baseline, concurrent batch) on the warm process. Every batch must fully
-    succeed, and no request may finish at its uncontended single-query
-    speed — a serialized sidecar lets the FIRST request do exactly that
-    while the last waits for the others (queue signature), whereas genuine
-    overlap keeps every member several times slower than its baseline.
+    Timing is diagnostic; the deterministic worker and phase tests own the
+    overlap assertions. A fast first finisher does not imply serialization.
     """
     queries = [
         '세입자 보호',
@@ -238,10 +201,6 @@ def test_real_engine_serves_concurrent_queries():
         '기후위기 대응 예산 편성',
         '중소기업 자금 지원',
     ]
-    # Three rounds judged on their median: a single shot drifts both ways
-    # (cold-round baseline elevation pushed the ratio down to 0.56, a
-    # transient batch wall spike pushed it up to 0.79 against the 0.85
-    # threshold) — the median drops either tail.
     ROUNDS = 3
 
     with real_sidecar_process() as (base, process, output_chunks):
@@ -274,7 +233,7 @@ def test_real_engine_serves_concurrent_queries():
             rounds = []
             for _ in range(ROUNDS):
                 single_latencies = []
-                baseline_started = perf_counter()
+                expected = []
                 for query in queries:
                     started = perf_counter()
                     response = measure_client.get(
@@ -283,7 +242,7 @@ def test_real_engine_serves_concurrent_queries():
                     )
                     single_latencies.append(perf_counter() - started)
                     assert response.status_code == 200
-                baseline_wall = perf_counter() - baseline_started
+                    expected.append(_rank_signature(response.json()))
                 sequential_sum = sum(single_latencies)
                 responses, latencies, wall = fire_concurrently(
                     base,
@@ -293,9 +252,9 @@ def test_real_engine_serves_concurrent_queries():
                 rounds.append(
                     {
                         'sum': sequential_sum,
-                        'client_delta': baseline_wall - sequential_sum,
                         'responses': responses,
                         'single': single_latencies,
+                        'expected': expected,
                         'latencies': latencies,
                         'wall': wall,
                     },
@@ -310,70 +269,209 @@ def test_real_engine_serves_concurrent_queries():
         f'rounds_wall={[round(item["wall"], 2) for item in rounds]} '
         f'measure_total={sum(item["wall"] + item["sum"] for item in rounds):.2f}s',
     )
-    ratios = [item['wall'] / item['sum'] for item in rounds]
-    max_over_sums = [max(item['latencies']) / item['sum'] for item in rounds]
-    inflations = [
-        (sum(item['latencies']) / len(item['latencies']))
-        / (sum(item['single']) / len(item['single']))
-        for item in rounds
-    ]
-    median_ratio = statistics.median(ratios)
-    median_max_over_sum = statistics.median(max_over_sums)
-    for index, item in enumerate(rounds, start=1):
-        print(
-            f'\n[real round {index}] sequential_sum={item["sum"]:.2f}s '
-            f'client_delta={item["client_delta"]:.3f}s wall={item["wall"]:.2f}s '
-            f'ratio={item["wall"] / item["sum"]:.2f} '
-            f'codes={[response.status_code for response in item["responses"]]} '
-            f'single={[round(latency, 2) for latency in item["single"]]} '
-            f'concurrent={[round(latency, 2) for latency in item["latencies"]]}',
-        )
-    ladder_min_over_max = [
-        round(min(item['latencies']) / max(item['latencies']), 2) for item in rounds
-    ]
-    print(
-        f'\n[real margin] indexedChunks={health["indexedChunks"]} model={health["model"]} '
-        f'ratios={[round(ratio, 2) for ratio in ratios]} '
-        f'median_ratio={median_ratio:.2f} '
-        f'ladder_min_over_max={ladder_min_over_max} '
-        'gate=(min_latency>=2x_single) lock_signature=1x_single',
-    )
-    # GIL vs lock: a lock held across search() would queue every request, so
-    # the last one waits for ALL others — max/sum ~= 1.0 (and ratio ~= 1.0)
-    # on any machine. Observed max far below the sum with per-request latency
-    # inflated ~3.7x (cpu) to ~5.2x (mps) means requests overlapped while
-    # slowing each other down: CPU/GIL contention, not a lock. Lock absence
-    # itself is proven directly by the stub tests (max_in_flight,
-    # health-under-search).
-    print(
-        f'\n[real gil-vs-lock] inflation={[round(value, 1) for value in inflations]}x '
-        f'median_max_over_sum={median_max_over_sum:.2f} (lock=1.00) '
-        f'median_ratio={median_ratio:.2f} (lock=1.00)',
-    )
     for index, item in enumerate(rounds, start=1):
         codes = [response.status_code for response in item['responses']]
+        print(
+            f'\n[real round {index}] device={health["device"]} '
+            f'sequential_sum={item["sum"]:.2f}s wall={item["wall"]:.2f}s '
+            f'p50={statistics.median(item["latencies"]):.3f}s '
+            f'max={max(item["latencies"]):.3f}s codes={codes}',
+        )
         assert codes == [200] * len(queries), f'round {index}: {codes}'
         assert all(response.json()['results'] for response in item['responses'])
-    # Queue detection, load-normalized: a sidecar that serialized searches
-    # behind one lock releases them one by one, so the FIRST request finishes
-    # at its uncontended single-query speed (min(batch) ~= 1x single) while
-    # the last waits for all others. With genuine overlap nobody finishes
-    # fast — every request pays the shared GIL / accelerator queue — so the
-    # fastest batch member stays several times its own baseline: measured
-    # 3.1-5.5x across cpu and mps runs, idle and busy. Threshold 2.0 keeps
-    # >=1.5x headroom over the lowest honest observation and fires on the
-    # ~1x lock signature on any hardware or machine load.
-    #
-    # Wall/sum ratio gates (0.85, then 1.0) were removed after measuring
-    # them flake: honest rounds span 0.83-1.02 on a busy host while a
-    # serialized sidecar also lands at ~1.0 — a sub-second wall clock has no
-    # separating margin between the two signatures. Ratio stays a print-only
-    # diagnostic below, alongside the latency ladder (min/max).
-    for index, item in enumerate(rounds, start=1):
-        baseline = statistics.median(item['single'])
-        fastest = min(item['latencies'])
-        assert fastest >= 2.0 * baseline, (
-            f'round {index}: fastest request {fastest:.2f}s = '
-            f'{fastest / baseline:.1f}x its uncontended {baseline:.2f}s — '
-            'first-in-line speed implies queueing (search running under a lock?)'
-        )
+        assert [_rank_signature(r.json()) for r in item['responses']] == item['expected']
+
+
+def _rank_signature(body):
+    return [[hit['chunkId'] for hit in body[tier]] for tier in ('results', 'weakResults')]
+
+
+def test_mps_admission_leaves_a_worker_free_and_releases_before_faiss(monkeypatch):
+    """Prove the worker boundary without using a latency ratio as a proxy."""
+    from types import SimpleNamespace
+
+    import numpy as np
+    from anyio import to_thread
+
+    from lawcast_semantic.search import SemanticSearcher
+    from service import app as sidecar
+
+    enter_first = threading.Event()
+    release_first = threading.Event()
+    enter_rank = threading.Event()
+    release_rank = threading.Event()
+    enter_next = threading.Event()
+
+    def embed(text):
+        if text == 'first':
+            enter_first.set()
+            assert release_first.wait(10)
+            return np.array([1.0, 0.0], dtype=np.float32)
+        if text == 'failure':
+            raise ValueError('test failure')
+        enter_next.set()
+        return np.array([0.0, 1.0], dtype=np.float32)
+
+    def rank(vector, k):
+        if vector[0] == 1:
+            enter_rank.set()
+            assert release_rank.wait(10)
+        return []
+
+    embedder = SimpleNamespace(
+        embed_query=embed, query_slots=threading.BoundedSemaphore(1), model_name='stub-model'
+    )
+    searcher = SemanticSearcher(embedder, None, [], {})
+    monkeypatch.setattr(searcher, '_rank', rank)
+    monkeypatch.setattr(sidecar.config, 'MPS_QUERY_CONCURRENCY', 1)
+
+    def loader(state, boot_repair=None):
+        state.record_device('mps')
+        state.mark_ready(searcher, 'stub-model')
+
+    async def worker_state():
+        workers = to_thread.current_default_thread_limiter()
+        workers.total_tokens = 2
+        admission = sidecar.app.state.mps_admission.statistics()
+        return {'workers': workers.borrowed_tokens, 'waiting': admission.tasks_waiting}
+
+    monkeypatch.setattr(sidecar.app.router, 'routes', list(sidecar.app.router.routes))
+    sidecar.app.get('/_test_workers')(worker_state)
+    with sidecar_server(monkeypatch, loader=loader) as base:
+        wait_until_ready(base, timeout=5)
+        with httpx.Client(base_url=base, timeout=10, trust_env=False) as client:
+            client.get('/_test_workers').raise_for_status()
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                first = pool.submit(client.get, '/search', params={'query': 'first'})
+                try:
+                    assert enter_first.wait(5)
+                    queued = [
+                        pool.submit(client.get, '/search', params={'query': f'next {i}'})
+                        for i in range(3)
+                    ]
+                    deadline = perf_counter() + 5
+                    while perf_counter() < deadline:
+                        state = client.get('/_test_workers').json()
+                        if state['waiting'] == 3:
+                            break
+                        sleep(0.01)
+                    assert state == {'workers': 1, 'waiting': 3}
+                    assert client.get('/health', timeout=2).status_code == 200
+                    release_first.set()
+                    assert enter_rank.wait(5)
+                    assert enter_next.wait(5), 'the first FAISS phase retained the embedding slot'
+                finally:
+                    release_first.set()
+                    release_rank.set()
+                assert first.result().status_code == 200
+                assert all(job.result().status_code == 200 for job in queued)
+            assert (
+                client.get(
+                    '/search', params={'query': 'failure'}, headers={'Connection': 'close'}
+                ).status_code
+                == 500
+            )
+            assert client.get('/search', params={'query': 'recovery'}).status_code == 200
+            assert client.get('/_test_workers').json() == {'workers': 0, 'waiting': 0}
+
+
+def test_split_lanes_bound_ranking_without_stalling_embedding_or_health(monkeypatch):
+    """Keep both active budgets separate and pin a generation across the handoff."""
+    from types import SimpleNamespace
+
+    import numpy as np
+    from anyio import to_thread
+
+    from lawcast_semantic.search import SemanticSearcher
+    from service import app as sidecar
+
+    release_embed = threading.Event()
+    release_rank = threading.Event()
+    first_rank = threading.Event()
+    lock = threading.Lock()
+    counters = {'embed': 0, 'embed_max': 0, 'rank': 0, 'rank_max': 0, 'embedded': 0}
+
+    def embed(text):
+        with lock:
+            counters['embed'] += 1
+            counters['embed_max'] = max(counters['embed_max'], counters['embed'])
+        try:
+            assert release_embed.wait(10)
+            return np.array([1.0], dtype=np.float32)
+        finally:
+            with lock:
+                counters['embed'] -= 1
+                counters['embedded'] += 1
+
+    def rank(vector, k):
+        with lock:
+            counters['rank'] += 1
+            counters['rank_max'] = max(counters['rank_max'], counters['rank'])
+        first_rank.set()
+        try:
+            assert release_rank.wait(10)
+            return []
+        finally:
+            with lock:
+                counters['rank'] -= 1
+
+    embedder = SimpleNamespace(embed_query=embed, model_name='stub-original')
+    searcher = SemanticSearcher(embedder, None, [], {})
+    monkeypatch.setattr(searcher, '_rank', rank)
+    monkeypatch.setattr(sidecar.config, 'QUERY_EMBED_WORKERS', 2)
+    monkeypatch.setattr(sidecar.config, 'QUERY_RANK_WORKERS', 1)
+
+    def loader(state, boot_repair=None):
+        state.record_device('cpu')
+        state.mark_ready(searcher, 'stub-original')
+
+    async def lane_state():
+        embed_lane, _, rank_lane = sidecar.app.state.query_lanes
+        return {
+            'embed_active': embed_lane.borrowed_tokens,
+            'embed_waiting': embed_lane.statistics().tasks_waiting,
+            'rank_active': rank_lane.borrowed_tokens,
+            'rank_waiting': rank_lane.statistics().tasks_waiting,
+            'default_active': to_thread.current_default_thread_limiter().borrowed_tokens,
+        }
+
+    monkeypatch.setattr(sidecar.app.router, 'routes', list(sidecar.app.router.routes))
+    sidecar.app.get('/_test_lanes')(lane_state)
+    with sidecar_server(monkeypatch, loader=loader) as base:
+        wait_until_ready(base, timeout=5)
+        with (
+            httpx.Client(base_url=base, timeout=10, trust_env=False) as client,
+            ThreadPoolExecutor(max_workers=4) as pool,
+        ):
+
+            def wait_for(expected):
+                deadline = perf_counter() + 5
+                while perf_counter() < deadline:
+                    actual = client.get('/_test_lanes').json()
+                    if all(actual[k] == v for k, v in expected.items()):
+                        return
+                    sleep(0.01)
+                pytest.fail(f'Expected lane state {expected}; got {actual}')
+
+            jobs = [
+                pool.submit(client.get, '/search', params={'query': f'probe {i}'}) for i in range(4)
+            ]
+            try:
+                wait_for({'embed_active': 2, 'embed_waiting': 2, 'default_active': 0})
+                assert client.get('/health', timeout=2).status_code == 200
+                release_embed.set()
+                assert first_rank.wait(5)
+                wait_for(
+                    {'embed_active': 0, 'rank_active': 1, 'rank_waiting': 3, 'default_active': 0}
+                )
+                assert client.get('/health', timeout=2).status_code == 200
+                sidecar.STATE.mark_ready(StubSearcher(), 'stub-reloaded')
+            finally:
+                release_embed.set()
+                release_rank.set()
+            bodies = [job.result().raise_for_status().json() for job in jobs]
+            assert all(body['model'] == 'stub-original' for body in bodies)
+            assert client.get('/health').json()['model'] == 'stub-reloaded'
+            assert counters['embed_max'] == 2
+            assert counters['rank_max'] == 1
+            assert counters['embedded'] == 4

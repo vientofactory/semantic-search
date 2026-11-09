@@ -21,16 +21,22 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from anyio import CapacityLimiter, from_thread, to_thread
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from lawcast_semantic import config  # env-only module: import stays light
 from lawcast_semantic.hybrid import has_lexical_evidence
 from lawcast_semantic.omp_env import use_single_threaded_omp
 
 from .logging import get_service_logger
+
+if TYPE_CHECKING:
+    from lawcast_semantic.search import SearchResults
+    from lawcast_semantic.timing import DensePhase
 
 use_single_threaded_omp()
 
@@ -92,10 +98,6 @@ class EngineState:
         # can show a tick while it runs (record_update clears `updating`).
         self.last_update_triggered_at: str | None = None
         self.updating = False
-        # Cross-encoder shadow scorer (§ rerank): loaded after the dense
-        # engine is ready; None while disabled (`off`) or not yet loaded.
-        self.reranker: Any = None
-        self.rerank_error: str | None = None
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -113,8 +115,6 @@ class EngineState:
                 'lastUpdateError': self.last_update_error,
                 'lastUpdateTriggeredAt': self.last_update_triggered_at,
                 'updating': self.updating,
-                'reranker': self.reranker,
-                'rerankError': self.rerank_error,
             }
 
     def mark_ready(
@@ -198,17 +198,6 @@ class EngineState:
             self.last_update_triggered_at = datetime.now(UTC).isoformat()
             self.updating = True
 
-    def record_reranker(self, reranker: Any) -> None:
-        """Register the loaded shadow scorer (serving never waits for it)."""
-        with self._lock:
-            self.reranker = reranker
-            self.rerank_error = None
-
-    def record_rerank_error(self, error: str) -> None:
-        """A failed reranker load degrades to unscored shadow, never to `failed`."""
-        with self._lock:
-            self.rerank_error = error
-
     def record_update(self, result: str, error: str | None = None) -> None:
         """Record one update tick's outcome for §5.2's additive /health fields.
 
@@ -232,14 +221,42 @@ class SearchHit(BaseModel):
     text: str
     # Whether the (alias-expanded) query shares a content token with this
     # chunk's subject + text (lawcast_semantic.hybrid). The backend's
-    # no-result gate reads this flag; it never filters inside the sidecar so
-    # chunk-window widening keeps working (see contract spec).
+    # legacy no-result gate reads this flag on uncalibrated indexes.
     lexicalEvidence: bool
-    # Cross-encoder relevance logit for this chunk (`reranking.Reranker`),
-    # scored over the served window's top hits when the shadow scorer is
-    # loaded. None while the scorer is disabled or absent: the backend's
-    # gate treats unknown as unscored (fail-open) and never as a reject.
-    rerankScore: float | None = None
+
+
+class DensePhaseTiming(BaseModel):
+    startMs: float = Field(ge=0, description='Offset from the start of Dense, in milliseconds.')
+    durationMs: float = Field(ge=0, description='Elapsed milliseconds for this phase.')
+
+
+class EmbeddingPhaseTiming(BaseModel):
+    startMs: float = Field(
+        ge=0, description='Offset from the start of query embedding, in milliseconds.'
+    )
+    durationMs: float = Field(ge=0, description='Elapsed milliseconds for this phase.')
+
+
+class EmbeddingStagesTiming(BaseModel):
+    tokenization: EmbeddingPhaseTiming
+    model: EmbeddingPhaseTiming
+    cpuConversion: EmbeddingPhaseTiming
+
+
+class DenseStagesTiming(BaseModel):
+    embedding: DensePhaseTiming
+    faiss: DensePhaseTiming
+    classification: DensePhaseTiming
+    embeddingStages: EmbeddingStagesTiming | None = None
+
+
+class SearchTimings(BaseModel):
+    denseMs: float = Field(ge=0, description='Tiered retrieval in milliseconds.')
+    annotateMs: float = Field(ge=0, description='Hit mapping and annotation in milliseconds.')
+    totalMs: float = Field(
+        ge=0, description='Search pipeline in milliseconds, before serialization.'
+    )
+    denseStages: DenseStagesTiming | None = None
 
 
 class SearchResponse(BaseModel):
@@ -251,29 +268,27 @@ class SearchResponse(BaseModel):
     # backend/src/modules/semantic-search/semantic-search.types.ts (pinned
     # by the contract spec there).
     lastUpdateAt: str | None
-    # Clear hits (score >= CLEAR_SIMILARITY) and the weak band between
-    # MIN_SIMILARITY and CLEAR_SIMILARITY; unrelated hits below the floor
-    # are dropped by the engine and appear in neither list.
+    # The window size above the absolute floor distinguishes evidence filtering
+    # from index exhaustion. Lower-ranked hits cannot pass the floor either.
+    # Null identifies the legacy cosine-only tiers.
+    candidateCount: int | None = None
     results: list[SearchHit]
     weakResults: list[SearchHit]
+    timings: SearchTimings
 
 
 def _hit(
     result: Any,
     query: str,
     chunks_by_id: dict,
-    rerank_scores: dict[str, float] | None = None,
 ) -> SearchHit:
     """Map one engine SearchResult onto the wire hit shape.
 
     `chunks_by_id` is the serving searcher's chunk lookup; hits whose chunk
     is unknown (older test doubles) report no lexical evidence.
-    `rerank_scores` maps chunk ids to cross-encoder logits (None while the
-    shadow scorer is disabled); unscored hits report None, never a number.
     """
     chunk = chunks_by_id.get(result.chunk_id)
     evidence = chunk is not None and has_lexical_evidence(query, chunk)
-    rerank_score = rerank_scores.get(result.chunk_id) if rerank_scores is not None else None
     return SearchHit(
         chunkId=result.chunk_id,
         noticeNum=result.notice_num,
@@ -283,7 +298,6 @@ def _hit(
         score=result.score,
         text=result.text,
         lexicalEvidence=evidence,
-        rerankScore=rerank_score,
     )
 
 
@@ -299,7 +313,7 @@ def log_startup_config() -> None:
     service_logger.info(
         'semantic config model=%s device_request=%s batch=%s artifacts=%s '
         'queryLen=%s maxK=%s defaultK=%s minSim=%s clearSim=%s '
-        'rerank=%s/%s/%s/topK=%s/maxLen=%s update=%s/%s',
+        'update=%s/%s',
         config.MODEL_NAME,
         config.DEVICE,
         config.EMBED_BATCH_SIZE,
@@ -309,11 +323,6 @@ def log_startup_config() -> None:
         config.DEFAULT_K,
         config.MIN_SIMILARITY,
         config.CLEAR_SIMILARITY,
-        config.RERANK_MODE,
-        config.RERANK_MODEL,
-        config.RERANK_DEVICE,
-        config.RERANK_TOP_K,
-        config.RERANK_MAX_LENGTH,
         'db' if config.DB_PATH else 'no-db',
         config.UPDATE_CRON if config.UPDATE_CRON else 'no-schedule',
     )
@@ -328,9 +337,7 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
     Discrimination is *which phase raised*, never the exception type.
     Importing the model stack inside the phases keeps `import service.app`
     light (no torch/faiss at module import) so validation paths and tests do
-    not pay for the model stack. Success and failure are both logged, like
-    the reranker ready line, so the embedding ready moment is observable
-    without polling `/health`.
+    not pay for the model stack. Readiness is logged without polling `/health`.
     """
     started = time.perf_counter()
     # Phase 1 — embedding model. Nothing downstream can succeed without it
@@ -395,61 +402,6 @@ def load_engine(state: EngineState, boot_repair: BootRepairHook | None = None) -
         len(searcher.chunk_ids),
         time.perf_counter() - started,
     )
-    maybe_load_reranker(state)
-
-
-def maybe_load_reranker(state: EngineState) -> None:
-    """Load the cross-encoder shadow scorer when `RERANK_MODE` enables it.
-
-    Runs after the dense engine is ready so readiness never waits on the
-    reranker; any failure degrades to unscored shadow and is recorded for
-    the logs. The model stack is imported here, keeping module import light.
-    """
-    if config.RERANK_MODE == 'off':
-        return
-    try:
-        from lawcast_semantic.reranking import load_reranker
-
-        reranker = load_reranker()
-        state.record_reranker(reranker)
-        service_logger.info(
-            'rerank shadow scorer ready (%s on %s)', config.RERANK_MODEL, reranker.device
-        )
-    except Exception as exc:  # noqa: BLE001 - shadow must never break serving
-        state.record_rerank_error(f'{type(exc).__name__}: {exc}')
-        service_logger.warning('rerank shadow scorer unavailable: %s', exc)
-
-
-def score_rerank_window(reranker: Any, query: str, hits: list) -> dict[str, float]:
-    """Score the served window's top hits and log the scores (no filtering).
-
-    `hits` arrive in served rank order (clear tier then weak band); only the
-    top `RERANK_TOP_K` are scored to bound the added CPU work. Returns a
-    chunk-id -> logit map for the wire annotation; a scoring failure logs
-    once and returns an empty map so the response still serves unscored.
-    """
-    from lawcast_semantic.reranking import shadow_inputs
-
-    try:
-        started = time.perf_counter()
-        window = list(hits)[: config.RERANK_TOP_K]
-        texts = shadow_inputs(query, window)
-        if not texts:
-            return {}
-        scores = reranker.score(query, texts)
-        rerank_ms = (time.perf_counter() - started) * 1000.0
-        top = sorted(scores, reverse=True)[:5]
-        service_logger.info(
-            'rerank-shadow n=%d top1=%.3f top5=%s rerank_ms=%.1f',
-            len(scores),
-            top[0],
-            ','.join(f'{value:.3f}' for value in top),
-            rerank_ms,
-        )
-        return {hit.chunk_id: score for hit, score in zip(window, scores)}
-    except Exception as exc:  # noqa: BLE001 - shadow must never break serving
-        service_logger.warning('rerank-shadow scoring failed: %s', exc)
-        return {}
 
 
 def create_state() -> EngineState:
@@ -465,6 +417,18 @@ async def lifespan(app: FastAPI):
     # though the runner module is part of this service.
     from . import update_runner
 
+    app.state.mps_admission = (
+        CapacityLimiter(config.MPS_QUERY_CONCURRENCY) if config.MPS_QUERY_CONCURRENCY else None
+    )
+    app.state.query_lanes = None
+    if config.QUERY_RANK_WORKERS:
+        embed = config.QUERY_EMBED_WORKERS
+        mps = min(embed, config.MPS_QUERY_CONCURRENCY or embed)
+        app.state.query_lanes = (
+            CapacityLimiter(embed),
+            CapacityLimiter(mps),
+            CapacityLimiter(config.QUERY_RANK_WORKERS),
+        )
     log_startup_config()
     # The hook is passed unconditionally; load_engine invokes it only on the
     # searcher phase and only when config.DB_PATH is set (the §4.2 off gate).
@@ -545,19 +509,86 @@ def manual_reload() -> dict:
 
 
 @app.get('/search', response_model=SearchResponse)
-def search(
+async def search_http(
+    request: Request,
     query: str = Query(..., min_length=1, max_length=MAX_QUERY_LENGTH),
     k: int = Query(DEFAULT_K, ge=1, le=MAX_K),
-    rerank: bool | None = Query(
-        default=None,
-        description=(
-            'Ask for cross-encoder logits on the served window. None (older '
-            'backend) keeps the legacy behavior: score whenever the shadow '
-            'scorer is loaded. Explicit false skips the scoring pass so '
-            'callers that never consume `rerankScore` avoid ~1s of CPU.'
-        ),
-    ),
 ) -> SearchResponse:
+    lanes = getattr(request.app.state, 'query_lanes', None)
+    if lanes is not None:
+        return await _search_with_worker_lanes(query, k, lanes)
+    limiter = getattr(request.app.state, 'mps_admission', None)
+    if limiter is None:
+        return await run_in_threadpool(search, query, k)
+    snapshot = _search_snapshot(query)
+    if snapshot['device'] != 'mps':
+        return await run_in_threadpool(_search_response, query, k, snapshot)
+
+    started = time.perf_counter()
+    borrower = object()
+    # Wait before borrowing an AnyIO worker, so queued searches do not starve
+    # health checks or FAISS work. Active native work is not abandoned on cancellation.
+    await limiter.acquire_on_behalf_of(borrower)
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            limiter.release_on_behalf_of(borrower)
+            released = True
+
+    try:
+        return await run_in_threadpool(
+            _search_response,
+            query,
+            k,
+            snapshot,
+            admission_started=started,
+            admission_ms=(time.perf_counter() - started) * 1000,
+            on_embedding_finished=lambda: from_thread.run_sync(release),
+        )
+    finally:
+        release()
+
+
+async def _search_with_worker_lanes(
+    query: str,
+    k: int,
+    lanes: tuple[CapacityLimiter, CapacityLimiter, CapacityLimiter],
+) -> SearchResponse:
+    # Keep embedding, ranking and annotation on a single index generation.
+    snapshot = _search_snapshot(query)
+    searcher = snapshot['searcher']
+    embed, mps, rank = lanes
+    started = time.perf_counter()
+
+    def embed_work():
+        admission_ms = (time.perf_counter() - started) * 1000
+        return searcher.embed_tiered(query, k, admission_started=started), admission_ms
+
+    # Each lane acquires a capacity token before starting a worker. Requests
+    # waiting for FAISS never retain an embedding token or an AnyIO worker.
+    prepared, admission_ms = await to_thread.run_sync(
+        embed_work, limiter=mps if snapshot['device'] == 'mps' else embed
+    )
+    rank_queued = time.perf_counter()
+
+    def rank_work():
+        rank_wait_ms = (time.perf_counter() - rank_queued) * 1000
+        outcome = searcher.rank_tiered(query, prepared, k)
+        return _format_search_response(
+            query, k, snapshot, outcome, started, admission_ms, rank_wait_ms
+        )
+
+    return await to_thread.run_sync(rank_work, limiter=rank)
+
+
+def search(query: str, k: int = DEFAULT_K) -> SearchResponse:
+    """Synchronous search entry point for local tools and benchmarks."""
+    return _search_response(query, k, _search_snapshot(query))
+
+
+def _search_snapshot(query: str) -> dict:
     if not query.strip():
         raise HTTPException(status_code=400, detail='query must not be blank')
     snapshot = STATE.snapshot()
@@ -568,46 +599,98 @@ def search(
             status_code=503,
             detail=f'semantic engine unavailable: {snapshot["error"]}',
         )
-    started = time.perf_counter()
+    return snapshot
+
+
+def _search_response(
+    query: str,
+    k: int,
+    snapshot: dict,
+    *,
+    admission_started: float | None = None,
+    admission_ms: float = 0.0,
+    on_embedding_finished: Callable[[], None] | None = None,
+) -> SearchResponse:
+    started = time.perf_counter() if admission_started is None else admission_started
     searcher = snapshot['searcher']
-    outcome = searcher.search_tiered(query, k=k)
-    dense_ms = (time.perf_counter() - started) * 1000.0
-    chunks_by_id = getattr(searcher, 'chunks_by_id', None) or {}
-    # The sidecar annotates, never filters (§1 of the gate plan): per-hit
-    # rerank logits ride along so the backend can gate post-accumulation
-    # without faking window exhaustion. None while the scorer is off/absent
-    # or the caller opts out (`rerank=false`: the backend sends it when its
-    # rerank leg is disabled and no score is consumed downstream).
-    rerank_scores: dict[str, float] | None = None
-    rerank_ms = 0.0
-    want_rerank = True if rerank is None else rerank
-    if want_rerank and config.RERANK_MODE != 'off' and snapshot.get('reranker') is not None:
-        rerank_started = time.perf_counter()
-        rerank_scores = score_rerank_window(
-            snapshot['reranker'],
+    if on_embedding_finished is None:
+        outcome = searcher.search_tiered(query, k=k)
+    else:
+        outcome = searcher.search_tiered(
             query,
-            [*outcome.results, *outcome.weak_results],
+            k=k,
+            admission_started=admission_started,
+            on_embedding_finished=on_embedding_finished,
         )
-        rerank_ms = (time.perf_counter() - rerank_started) * 1000.0
-    annotate_started = time.perf_counter()
-    response = SearchResponse(
+    return _format_search_response(query, k, snapshot, outcome, started, admission_ms)
+
+
+def _format_search_response(
+    query: str,
+    k: int,
+    snapshot: dict,
+    outcome: SearchResults,
+    started: float,
+    admission_ms: float,
+    rank_wait_ms: float = 0.0,
+) -> SearchResponse:
+    dense_finished = time.perf_counter()
+    chunks_by_id = getattr(snapshot['searcher'], 'chunks_by_id', None) or {}
+    results = [_hit(result, query, chunks_by_id) for result in outcome.results]
+    weak_results = [_hit(result, query, chunks_by_id) for result in outcome.weak_results]
+    finished = time.perf_counter()
+    stages = getattr(outcome, 'dense_stages', None)
+
+    def phase_timing(phase: DensePhase) -> DensePhaseTiming:
+        return DensePhaseTiming(
+            startMs=(phase.started - started) * 1000.0,
+            durationMs=(phase.finished - phase.started) * 1000.0,
+        )
+
+    embedding = stages.embedding_stages if stages is not None else None
+
+    def embedding_phase(phase: DensePhase) -> EmbeddingPhaseTiming:
+        return EmbeddingPhaseTiming(
+            startMs=(phase.started - stages.embedding.started) * 1000.0,
+            durationMs=(phase.finished - phase.started) * 1000.0,
+        )
+
+    timings = SearchTimings(
+        denseMs=(dense_finished - started) * 1000.0,
+        annotateMs=(finished - dense_finished) * 1000.0,
+        totalMs=(finished - started) * 1000.0,
+        denseStages=DenseStagesTiming(
+            embedding=phase_timing(stages.embedding),
+            faiss=phase_timing(stages.faiss),
+            classification=phase_timing(stages.classification),
+            embeddingStages=EmbeddingStagesTiming(
+                tokenization=embedding_phase(embedding.tokenization),
+                model=embedding_phase(embedding.model),
+                cpuConversion=embedding_phase(embedding.cpu_conversion),
+            )
+            if embedding is not None
+            else None,
+        )
+        if stages is not None
+        else None,
+    )
+    service_logger.info(
+        'search-timing k=%d dense_ms=%.1f annotate_ms=%.1f total_ms=%.1f '
+        'admission_ms=%.1f rank_wait_ms=%.1f',
+        k,
+        timings.denseMs,
+        timings.annotateMs,
+        timings.totalMs,
+        admission_ms,
+        rank_wait_ms,
+    )
+    return SearchResponse(
         query=query,
         k=k,
         model=snapshot['model'],
         lastUpdateAt=snapshot['lastUpdateAt'],
-        results=[_hit(result, query, chunks_by_id, rerank_scores) for result in outcome.results],
-        weakResults=[
-            _hit(result, query, chunks_by_id, rerank_scores) for result in outcome.weak_results
-        ],
+        candidateCount=outcome.candidate_count,
+        results=results,
+        weakResults=weak_results,
+        timings=timings,
     )
-    annotate_ms = (time.perf_counter() - annotate_started) * 1000.0
-    service_logger.info(
-        'search-timing k=%d dense_ms=%.1f annotate_ms=%.1f rerank_ms=%.1f total_ms=%.1f rerank=%s',
-        k,
-        dense_ms,
-        annotate_ms,
-        rerank_ms,
-        (time.perf_counter() - started) * 1000.0,
-        'scored' if rerank_scores is not None else 'skipped',
-    )
-    return response

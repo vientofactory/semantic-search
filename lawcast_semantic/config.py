@@ -98,6 +98,13 @@ MODEL_NAME = os.environ.get('LAWCAST_SEMANTIC_MODEL', 'dragonkue/BGE-m3-ko')
 # to override the probe; an unavailable pin degrades to cpu with a warning.
 DEVICE = os.environ.get('LAWCAST_SEMANTIC_DEVICE', 'auto').strip() or 'auto'
 EMBED_BATCH_SIZE = int(os.environ.get('LAWCAST_SEMANTIC_BATCH', '32'))
+MPS_QUERY_CONCURRENCY = int(os.environ.get('LAWCAST_SEMANTIC_MPS_QUERY_CONCURRENCY', '0'))
+if MPS_QUERY_CONCURRENCY < 0:
+    raise ValueError('LAWCAST_SEMANTIC_MPS_QUERY_CONCURRENCY must be nonnegative')
+QUERY_EMBED_WORKERS = int(os.environ.get('LAWCAST_SEMANTIC_QUERY_EMBED_WORKERS', '4'))
+QUERY_RANK_WORKERS = int(os.environ.get('LAWCAST_SEMANTIC_QUERY_RANK_WORKERS', '0'))
+if QUERY_EMBED_WORKERS < 1 or QUERY_RANK_WORKERS < 0:
+    raise ValueError('query embedding workers must be positive and ranking workers nonnegative')
 
 # Scheduled refresh gates (agent_memories/08-semantic-search-production-deploy/
 # incremental-update-pipeline-design.md §4.2). All three default to disabled:
@@ -174,38 +181,7 @@ if not 1 <= DEFAULT_K <= MAX_K:
         f'(got {DEFAULT_K}, max {MAX_K})'
     )
 
-# Cross-encoder rerank shadow scorer (agent_memories/42-sidecar-lexical-gate/
-# plan.md §9-10). `off` (default) never loads the model; `shadow` loads it
-# after the dense engine is ready, logs per-query rerank scores, and
-# annotates each served hit with its logit (`rerankScore`). The sidecar
-# never filters on the score (that would fake window exhaustion); the
-# backend gates post-accumulation. Unknown modes fail fast like the tiers.
-RERANK_MODEL = os.environ.get('LAWCAST_SEMANTIC_RERANK_MODEL', 'nlpai-lab/KURE-Reranker-nano')
-RERANK_MODE = os.environ.get('LAWCAST_SEMANTIC_RERANK_MODE', 'off').strip().lower() or 'off'
-if RERANK_MODE not in {'off', 'shadow'}:
-    raise ValueError(
-        f"LAWCAST_SEMANTIC_RERANK_MODE must be 'off' or 'shadow' (got {RERANK_MODE!r})"
-    )
-# How many of the served window's top hits the shadow scorer scores per
-# query (results first, then the weak band). Bounds the added CPU work.
-RERANK_TOP_K = int(os.environ.get('LAWCAST_SEMANTIC_RERANK_TOP_K', '20'))
-if RERANK_TOP_K < 1:
-    raise ValueError(f'LAWCAST_SEMANTIC_RERANK_TOP_K must be >= 1 (got {RERANK_TOP_K})')
-# The *requested* reranker device: resolved through
-# `lawcast_semantic.device.resolve_device` (same CUDA > MPS > XPU > cpu
-# probe as the embedding device). Default `cpu`: concurrent CrossEncoder
-# + embedding forward passes on Apple MPS abort the process (Metal command
-# buffer race, measured 2026-10-17), so the shared-accelerator pick is
-# opt-in via `LAWCAST_SEMANTIC_RERANK_DEVICE=auto` for single-query
-# measurement only. An unavailable pin degrades to cpu with a warning;
-# the CPU-only production image always resolves to cpu either way.
-RERANK_DEVICE = os.environ.get('LAWCAST_SEMANTIC_RERANK_DEVICE', 'cpu').strip() or 'cpu'
-# Truncation length (tokens) of the cross-encoder input. The served window
-# holds chunks of at most CHUNK_MAX_CHARS characters plus a short query, so
-# the 512 default pads and attends over mostly empty positions (attention
-# cost grows quadratically with length). Lower to 256 once the live-traffic
-# calibration confirms no score drift; the code default stays 512 so a
-# deploy without the env var behaves exactly as before.
-RERANK_MAX_LENGTH = int(os.environ.get('LAWCAST_SEMANTIC_RERANK_MAX_LENGTH', '512'))
-if RERANK_MAX_LENGTH < 1:
-    raise ValueError(f'LAWCAST_SEMANTIC_RERANK_MAX_LENGTH must be >= 1 (got {RERANK_MAX_LENGTH})')
+# Calibrated relevance is used only with the Korean BGE FlatIP index.
+RELEVANCE_ENABLED = os.environ.get(
+    'LAWCAST_SEMANTIC_RELEVANCE_ENABLED', 'false'
+).strip().lower() in {'true', '1', 'yes', 'on'}

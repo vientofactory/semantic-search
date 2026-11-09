@@ -24,9 +24,6 @@ def main():
     parser.add_argument('--queries', required=True, type=Path)
     parser.add_argument('--k', default=50, type=int)
     parser.add_argument('--repeat', default=2, type=int)
-    parser.add_argument(
-        '--rerank', action='store_true', help='Also run the pinned reranker offline'
-    )
     args = parser.parse_args()
     # Check the process environment before config can read a dotenv file.
     if os.environ.get(SHADOW_ENABLED_ENV) != '1':
@@ -87,20 +84,13 @@ def main():
     head.eval()
 
     from lawcast_semantic.search import SearchResult, SemanticSearcher
-    from service.app import SearchResponse, _hit, score_rerank_window
+    from service.app import SearchResponse, _hit
 
     class TeacherMetadata:
         model_name = TEACHER
         dimension = 1024
 
     searcher = SemanticSearcher.load(TeacherMetadata())
-    reranker = None
-    if args.rerank:
-        from lawcast_semantic.reranking import load_reranker
-
-        reranker = load_reranker(
-            config.RERANK_MODEL, device=config.RERANK_DEVICE, max_length=config.RERANK_MAX_LENGTH
-        )
 
     @torch.inference_mode()
     def encode(query, student):
@@ -136,14 +126,14 @@ def main():
         raw = row['query']
         normalized = normalize_text(expand_query(raw).text)
 
-        def serialize(hits, scores):
+        def serialize(hits):
             response = SearchResponse(
                 query=raw,
                 k=args.k,
                 model=TEACHER,
                 lastUpdateAt=searcher.index_updated_at,
-                results=[_hit(hit, raw, searcher.chunks_by_id, scores) for hit in hits[0]],
-                weakResults=[_hit(hit, raw, searcher.chunks_by_id, scores) for hit in hits[1]],
+                results=[_hit(hit, raw, searcher.chunks_by_id) for hit in hits[0]],
+                weakResults=[_hit(hit, raw, searcher.chunks_by_id) for hit in hits[1]],
             )
             response.model_dump_json()
             return response
@@ -151,9 +141,6 @@ def main():
         return measure(
             lambda: encode(normalized, student),
             rank,
-            lambda hits: (
-                score_rerank_window(reranker, raw, hits[0] + hits[1]) if reranker else None
-            ),
             serialize,
         )
 
@@ -164,7 +151,6 @@ def main():
         index_type=searcher.index.index_type,
         indexed_chunks=len(searcher.chunk_ids),
         index_updated_at=searcher.index_updated_at,
-        rerank=bool(reranker),
         query_count=len(rows),
         repeat=args.repeat,
         k=args.k,

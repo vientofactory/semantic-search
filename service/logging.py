@@ -1,7 +1,7 @@
 """Dedicated sidecar logger on uvicorn's log format.
 
 All sidecar logs (`service.*`) and the library logs the sidecar depends on
-(`lawcast_semantic.*`: device probe, rerank fallback) share uvicorn's own
+(`lawcast_semantic.*`: device probe) share uvicorn's own
 line layout: `%(levelprefix)s %(message)s` rendered by uvicorn's
 `DefaultFormatter`. A `[sidecar]` context marker sits in front of every
 message so a sidecar line never reads as a uvicorn line:
@@ -63,7 +63,7 @@ def get_service_logger(name: str) -> logging.Logger:
     base = logging.getLogger('service')
     base.setLevel(logging.INFO)
     _ensure_handler(base)
-    # Library logs the sidecar depends on (device probe, rerank fallback)
+    # Library logs the sidecar depends on (device probe)
     # would otherwise fall to the root logger, which uvicorn leaves at
     # WARNING with no handler: INFO detection lines vanish and warnings
     # print bare. Route them through the same format.

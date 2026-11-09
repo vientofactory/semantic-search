@@ -31,10 +31,6 @@ LAWCAST_SEMANTIC_DISTILLATION_SHADOW_ENABLED=1 \
   python scripts/11_shadow_replay.py --queries /probe/queries.json --k 50 --repeat 2
 ```
 
-The logs include encoding, FAISS retrieval, reranking (zero unless
-`--rerank` is explicitly passed), annotation/serialization, and total sidecar
-compute. They exclude the backend HTTP hop, archive hydration, and WAN.
-Measure those separately using the real backend origin, with BGE20 still
-disconnected. Do not compare a rerank-off run to a rerank-on run. For a
-replay with reranking, use the same cached reranker, top-K and max length
-for both encoders.
+The logs include encoding, FAISS retrieval, annotation/serialization, and total
+sidecar compute. The replay isolates raw cosine tiers. It excludes calibrated
+relevance classification, the backend HTTP hop, archive hydration, and WAN.

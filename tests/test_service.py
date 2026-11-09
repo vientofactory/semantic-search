@@ -53,7 +53,7 @@ def client(monkeypatch):
                 text='관련도가 낮은 결과 예시...',
             )
         ][:k]
-        return SimpleNamespace(results=stub_search(query, k), weak_results=weak)
+        return SimpleNamespace(results=stub_search(query, k), weak_results=weak, candidate_count=k)
 
     def ready_loader(state, boot_repair=None):
         state.mark_ready(
@@ -77,12 +77,72 @@ def test_search_returns_ranked_hits(client):
     body = response.json()
     assert body['query'] == '세입자 보호'
     assert body['model'] == 'stub-model'
+    assert body['candidateCount'] == 3
     hit = body['results'][0]
     assert hit['chunkId'] == '2220607-0000'
     assert hit['noticeNum'] == 2220607
     assert hit['section'] == '주요내용'
     assert hit['score'] == pytest.approx(0.5863)
     assert 'text' in hit
+
+
+def test_search_reports_pipeline_timings_in_milliseconds(client, monkeypatch):
+    import service.app as app_module
+
+    ticks = iter([10, 10.125, 10.15625])
+    monkeypatch.setattr(app_module, 'time', SimpleNamespace(perf_counter=lambda: next(ticks)))
+    response = client.get('/search', params={'query': '세입자 보호', 'k': 3})
+    assert response.status_code == 200
+    assert response.json()['timings'] == {
+        'denseMs': 125.0,
+        'annotateMs': 31.25,
+        'totalMs': 156.25,
+        'denseStages': None,
+    }
+
+
+def test_search_serializes_dense_stage_offsets_and_durations(client, monkeypatch):
+    import service.app as app_module
+    from lawcast_semantic.search import DensePhase, DenseStages
+    from lawcast_semantic.timing import EmbeddingStages
+
+    searcher = app_module.STATE.snapshot()['searcher']
+    original = searcher.search_tiered
+
+    def search_with_stages(query, k):
+        result = original(query, k)
+        result.dense_stages = DenseStages(
+            embedding=DensePhase(10.125, 10.375),
+            faiss=DensePhase(10.5, 10.625),
+            classification=DensePhase(10.625, 10.6875),
+            embedding_stages=EmbeddingStages(
+                tokenization=DensePhase(10.15625, 10.1875),
+                model=DensePhase(10.1875, 10.3125),
+                cpu_conversion=DensePhase(10.3125, 10.34375),
+            ),
+        )
+        return result
+
+    monkeypatch.setattr(searcher, 'search_tiered', search_with_stages)
+    ticks = iter([10, 10.75, 10.875])
+    monkeypatch.setattr(app_module, 'time', SimpleNamespace(perf_counter=lambda: next(ticks)))
+    response = client.get('/search', params={'query': '세입자 보호', 'k': 3})
+    assert response.status_code == 200
+    assert response.json()['timings'] == {
+        'denseMs': 750.0,
+        'annotateMs': 125.0,
+        'totalMs': 875.0,
+        'denseStages': {
+            'embedding': {'startMs': 125.0, 'durationMs': 250.0},
+            'faiss': {'startMs': 500.0, 'durationMs': 125.0},
+            'classification': {'startMs': 625.0, 'durationMs': 62.5},
+            'embeddingStages': {
+                'tokenization': {'startMs': 31.25, 'durationMs': 31.25},
+                'model': {'startMs': 62.5, 'durationMs': 125.0},
+                'cpuConversion': {'startMs': 187.5, 'durationMs': 31.25},
+            },
+        },
+    }
 
 
 def test_search_passes_weak_results_through_separately(client):
@@ -470,81 +530,6 @@ def test_search_response_carries_evidence_flag(client):
     body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
     assert 'lexicalEvidence' in body['results'][0]
     assert 'lexicalEvidence' in body['weakResults'][0]
-
-
-def test_shadow_scoring_leaves_response_unchanged(client, monkeypatch, caplog):
-    """Shadow mode logs rerank scores; served results match the off path."""
-    from types import SimpleNamespace
-
-    import service.app as app_module
-
-    def fake_score(query, texts):
-        return [9.9] * len(texts)
-
-    app_module.STATE.record_reranker(
-        SimpleNamespace(model_name='stub', device='cpu', score=fake_score)
-    )
-    monkeypatch.setattr(app_module.config, 'RERANK_MODE', 'shadow')
-    with caplog.at_level('INFO', logger='service'):
-        body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
-    assert [hit['noticeNum'] for hit in body['results']] == [2220607]
-    assert [hit['noticeNum'] for hit in body['weakResults']] == [2220715]
-    assert 'rerank-shadow n=' in caplog.text
-    assert 'top1=9.900' in caplog.text
-    # The sidecar annotates: every served hit carries its window logit.
-    assert body['results'][0]['rerankScore'] == pytest.approx(9.9)
-    assert body['weakResults'][0]['rerankScore'] == pytest.approx(9.9)
-
-
-def test_hits_report_no_rerank_score_while_scorer_is_off(client):
-    """`off` mode annotates nothing: the backend treats null as unscored."""
-    body = client.get('/search', params={'query': '세입자 보호', 'k': 3}).json()
-    assert body['results'][0]['rerankScore'] is None
-    assert body['weakResults'][0]['rerankScore'] is None
-
-
-def test_rerank_opt_out_skips_scoring_pass(client, monkeypatch, caplog):
-    """`rerank=false` serves unscored without touching the scorer."""
-    from types import SimpleNamespace
-
-    import service.app as app_module
-
-    def fail_score(query, texts):
-        raise AssertionError('scorer touched despite rerank=false')
-
-    app_module.STATE.record_reranker(
-        SimpleNamespace(model_name='stub', device='cpu', score=fail_score)
-    )
-    monkeypatch.setattr(app_module.config, 'RERANK_MODE', 'shadow')
-    with caplog.at_level('INFO', logger='service'):
-        body = client.get(
-            '/search', params={'query': '세입자 보호', 'k': 3, 'rerank': False}
-        ).json()
-    assert body['results'][0]['rerankScore'] is None
-    assert body['weakResults'][0]['rerankScore'] is None
-    assert 'rerank-shadow n=' not in caplog.text
-    assert 'search-timing' in caplog.text
-    assert 'rerank=skipped' in caplog.text
-
-
-def test_rerank_scoring_failure_serves_unscored(client, monkeypatch, caplog):
-    """A throwing scorer degrades to unscored hits, never to a 500."""
-    from types import SimpleNamespace
-
-    import service.app as app_module
-
-    def boom(query, texts):
-        raise RuntimeError('weights exploded')
-
-    app_module.STATE.record_reranker(SimpleNamespace(model_name='stub', device='cpu', score=boom))
-    monkeypatch.setattr(app_module.config, 'RERANK_MODE', 'shadow')
-    with caplog.at_level('INFO', logger='service'):
-        response = client.get('/search', params={'query': '세입자 보호', 'k': 3})
-    assert response.status_code == 200
-    body = response.json()
-    assert [hit['noticeNum'] for hit in body['results']] == [2220607]
-    assert body['results'][0]['rerankScore'] is None
-    assert 'rerank-shadow scoring failed' in caplog.text
 
 
 def test_import_service_app_stays_light():

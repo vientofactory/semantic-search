@@ -74,7 +74,7 @@ ALIASES: dict[str, str] = {
     # BGE-gap abbreviations (added 2026-10-17): BGE-m3-ko still ranks these
     # 3-4 digits on the full corpus, so they are alias problems, not ranking
     # problems. Each entry measured raw -> expanded on the BGE full index:
-    # `예보법` 3128 -> 48, `KIC` 2447 -> 14, `ODA`/`개발원조` 4694 -> 62,
+    # `예보법` 3128 -> 48, `KIC` 2447 -> 14, `ODA` 4694 -> 62,
     # `보이스피싱` 147 -> 4, `요양원` 902 -> 100.
     # Deliberately NOT added: `고준위방폐물` (74 -> 52, marginal, dict kept
     # tight) and `통화녹음` (never fires: the colloquial query continues with
@@ -83,7 +83,7 @@ ALIASES: dict[str, str] = {
     '예보법': '예금자보호법',
     'KIC': '한국투자공사법',
     'ODA': '국제개발협력기본법',
-    '개발원조': '국제개발협력',
+    '개발원조': '국제개발협력기본법',
     '보이스피싱': '전기통신금융사기',
     '요양원': '노인장기요양',
     # Additional law names checked against the BGE-m3-ko index.
@@ -201,6 +201,10 @@ _ALIAS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The spoken form ends in a vowel but the expanded law name ends in a consonant.
+_AID_LAW_PARTICLES = {'는': '은', '가': '이', '를': '을', '와': '과', '로': '으로'}
+_AID_ALIAS_PAIR = frozenset({'개발원조', 'ODA'})
+
 
 @dataclass(frozen=True)
 class QueryExpansion:
@@ -220,12 +224,27 @@ def expand_query(query: str | None) -> QueryExpansion:
     if not query:
         return QueryExpansion('', ())
     matched: list[str] = []
+    parts: list[str] = []
+    last_end = 0
+    previous_alias = previous_particle = ''
 
-    def replace(match: re.Match) -> str:
+    for match in _ALIAS_RE.finditer(query):
         key = re.sub(r'\s+', '', match.group('alias')).casefold()
         alias, official = _LOOKUP[key]
         if alias not in matched:
             matched.append(alias)
-        return official + (match.group('particle') or '')
+        particle = match.group('particle') or ''
+        if alias == '개발원조':
+            particle = _AID_LAW_PARTICLES.get(particle, particle)
 
-    return QueryExpansion(_ALIAS_RE.sub(replace, query), tuple(matched))
+        gap = query[last_end : match.start()]
+        # Adjacent synonymous forms describe one law, not two copies of it.
+        if not previous_particle and gap.isspace() and {previous_alias, alias} == _AID_ALIAS_PAIR:
+            parts.append(particle)
+        else:
+            parts.extend((gap, official, particle))
+        last_end = match.end()
+        previous_alias, previous_particle = alias, particle
+
+    parts.append(query[last_end:])
+    return QueryExpansion(''.join(parts), tuple(matched))

@@ -86,6 +86,8 @@ curl --get http://127.0.0.1:8300/search \
 
 - `GET /health`: `status`가 `loading`, `ready`, `failed` 중 하나로 표시됩니다. `model`, `device`, `indexedChunks`, `maxK`로 현재 엔진 설정을 확인합니다.
 - `GET /search`: 기본 질의 길이는 1~500자, `k`는 1~100(기본 5)입니다. **`k`의 단위는 공고가 아니라 청크**이며, 공고별 중복 제거는 백엔드가 담당합니다. 공백만 있는 질의는 400, 길이·범위 위반은 422, 엔진 미준비 상태는 503을 반환합니다.
+- 성공 응답의 `timings`는 요청한 청크 구간 하나의 소요 시간을 밀리초로 반환합니다. `denseMs`는 검색 엔진의 후보 검색·분류, `annotateMs`는 두 결과 목록의 변환·주석 처리, `totalMs`는 두 단계 전체입니다. 요청 대기, HTTP 전송, 응답 JSON 직렬화는 포함하지 않습니다.
+- `timings.denseStages`는 질의 임베딩(`embedding`), FAISS 조회·정렬 및 후보 구성(`faiss`), 관련도 분류(`classification`)의 `startMs`와 `durationMs`를 반환합니다. 시작 위치는 Dense 시작 기준입니다. 질의 전처리·벡터 검증 등은 Dense 총시간에 남으므로 세 단계의 합과 총시간이 다를 수 있습니다. 검색을 건너뛰면 단계별 값은 `null`입니다.
 - 검색 결과는 코사인 유사도에 따라 `results`(기본 0.45 이상)와 `weakResults`(0.25 이상 0.45 미만)로 나뉩니다. 0.25 미만은 제외하며, 관련 결과가 없으면 빈 배열을 반환합니다.
 - `POST /reload`: 디스크의 새 아티팩트를 검증한 뒤 메모리의 인덱스를 교체합니다. 성공은 200, 엔진 미준비·갱신 중은 409, 검증 실패는 503입니다. 검증에 실패해도 기존 세대는 계속 서빙합니다. 인증이 없는 내부용 엔드포인트이므로 외부에 공개하지 않습니다.
 
@@ -114,7 +116,11 @@ cp .env.example .env
 - `LAWCAST_SEMANTIC_MIN_SIMILARITY`, `LAWCAST_SEMANTIC_CLEAR_SIMILARITY`: 약한 결과와 명확한 결과의 하한. 기본 `0.25`, `0.45`이며 앞의 값이 뒤의 값보다 클 수 없습니다.
 - `LAWCAST_SEMANTIC_MAX_QUERY_LENGTH`, `LAWCAST_SEMANTIC_MAX_K`, `LAWCAST_SEMANTIC_DEFAULT_K`: 질의 길이·청크 창 상한·기본 창 크기. 기본 `500`, `100`, `5`이며 `1 ≤ DEFAULT_K ≤ MAX_K`여야 합니다.
 
-리랭커 등 실험용 설정은 `.env.example`을 참고하세요. 리랭커는 기본 `off`입니다. `shadow` 모드에서는 상위 청크의 점수를 로그에 남기고 `rerankScore`로 응답에도 포함합니다. 사이드카가 순서나 결과 계층을 바꾸지는 않습니다. `/search`에 `rerank=false`를 전달하면 점수 계산을 생략합니다. `lexicalEvidence`도 청크별로 응답하며, 백엔드는 별도 게이트 설정에 따라 이 값과 리랭커 점수를 결과 필터링에 사용할 수 있습니다.
+`LAWCAST_SEMANTIC_RELEVANCE_ENABLED=true`를 설정하면 기본 모델의 FlatIP 인덱스에서 코사인 외에 쿼리별 배경 점수와 IDF 가중 정확 토큰 일치율을 함께 사용합니다. 인덱스를 열 때 같은 세대의 청크 512개를 고정 시드로 뽑습니다. 검색할 때는 쿼리를 한 번만 임베딩합니다. 1위 후보도 기준을 넘지 못하면 제외되며, 약한 결과를 명확한 결과에 채워 넣지 않습니다.
+
+- `LAWCAST_SEMANTIC_RELEVANCE_ENABLED=false`(기본값): 기존 코사인 전용 계층을 유지합니다. 다른 모델과 SQ8 인덱스는 검증 범위가 아니므로 코사인 전용 계층을 사용합니다.
+- 내부 `/search`의 `candidateCount`는 최소 코사인을 통과했지만 아직 근거로 분류하지 않은 청크 수입니다. 백엔드는 이 값으로 추가 후보를 조회할지 판단합니다. 코사인 전용 모드에서는 값이 `null`이며 기존 어휘 게이트 설정이 그대로 적용됩니다. 공개 검색 응답 형식은 그대로입니다.
+- 이전 크로스 인코더 설정 및 내부 점수 필드는 제거했습니다. 인덱스 재구축은 필요하지 않습니다.
 
 ## 인덱스 갱신과 운영
 

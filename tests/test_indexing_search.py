@@ -264,7 +264,7 @@ def _tiered_searcher(tmp_path: Path, vectors: np.ndarray, query: np.ndarray) -> 
 
 def test_search_tiered_splits_clear_weak_and_unrelated(tmp_path: Path, monkeypatch):
     """score >= CLEAR -> clear, MIN <= score < CLEAR -> weak, below MIN -> dropped."""
-    from lawcast_semantic import config
+    from lawcast_semantic import config, search
 
     monkeypatch.setattr(config, 'MIN_SIMILARITY', 0.25)
     monkeypatch.setattr(config, 'CLEAR_SIMILARITY', 0.45)
@@ -281,7 +281,15 @@ def test_search_tiered_splits_clear_weak_and_unrelated(tmp_path: Path, monkeypat
     )
     searcher = _tiered_searcher(tmp_path, vectors, vectors[0])
 
+    ticks = iter([10, 10.125, 10.25, 10.5, 10.5625])
+    monkeypatch.setattr(search, 'perf_counter', lambda: next(ticks))
     outcome = searcher.search_tiered('질의', k=4)
+    assert outcome.dense_stages == search.DenseStages(
+        embedding=search.DensePhase(10, 10.125),
+        faiss=search.DensePhase(10.25, 10.5),
+        classification=search.DensePhase(10.5, 10.5625),
+    )
+    assert searcher.search_tiered('   ', k=4).dense_stages is None
 
     assert [hit.chunk_id for hit in outcome.results] == ['chunk-0']
     assert outcome.results[0].score == pytest.approx(1.0, abs=1e-5)
@@ -333,3 +341,37 @@ def test_sq8_round_trip_and_index_type_guard(tmp_path):
     id_map_path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(ValueError, match='does not match declared type'):
         VectorIndex.load(index_path, id_map_path)
+
+
+def test_query_slot_covers_profiled_embedding_but_not_faiss(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    vectors = make_vectors()
+    searcher = _tiered_searcher(tmp_path, vectors, vectors[0])
+    held = False
+
+    @contextmanager
+    def slot():
+        nonlocal held
+        assert not held
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    rank = searcher._rank
+
+    def embed(query):
+        assert held
+        return vectors[0], None
+
+    def rank_outside_slot(vector, k):
+        assert not held
+        return rank(vector, k)
+
+    monkeypatch.setattr(searcher.embedder, 'query_slots', slot(), raising=False)
+    monkeypatch.setattr(searcher.embedder, 'embed_query_profiled', embed, raising=False)
+    monkeypatch.setattr(searcher, '_rank', rank_outside_slot)
+    result = searcher.search_tiered('질의', k=4)
+    assert result.results[0].chunk_id == 'chunk-0'
