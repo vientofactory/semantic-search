@@ -21,8 +21,8 @@ def test_shadow_rejects_an_incompatible_checkpoint():
 
 
 def test_shadow_timing_covers_full_pipeline_and_returns_serialized_value():
-    timing, output = measure(lambda: 2, lambda x: x + 1, lambda x: x + 2, lambda x, y: x + y)
+    timing, output = measure(lambda: 2, lambda x: x + 1, lambda x: x + 5)
     assert output == 8
     assert timing.total_ms == pytest.approx(
-        timing.encode_ms + timing.index_ms + timing.rerank_ms + timing.serialize_ms
+        timing.encode_ms + timing.index_ms + timing.serialize_ms
     )

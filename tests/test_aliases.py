@@ -116,7 +116,7 @@ def test_bge_gap_abbreviations_expand_to_official_names():
     assert expand_query('예보법 개정').text == '예금자보호법 개정'
     assert expand_query('KIC 관련법 개정').text == '한국투자공사법 관련법 개정'
     assert expand_query('kic 관련법 개정').text == '한국투자공사법 관련법 개정'
-    assert expand_query('개발원조 ODA 예산').text == '국제개발협력 국제개발협력기본법 예산'
+    assert expand_query('개발원조 ODA 예산').text == '국제개발협력기본법 예산'
     assert expand_query('보이스피싱 특별법').text == '전기통신금융사기 특별법'
     assert expand_query('요양원 비용').text == '노인장기요양 비용'
 
@@ -199,3 +199,24 @@ def test_searcher_does_not_embed_a_whitespace_query():
 
     assert searcher.search('   ', k=3) == []
     assert embedder.texts == []
+
+
+def test_development_aid_expands_to_the_law_in_isolation_and_in_a_sentence():
+    assert expand_query('개발원조').text == '국제개발협력기본법'
+    expansion = expand_query('개발원조의 예산 지원을 늘리는 개정안')
+    assert expansion.text == '국제개발협력기본법의 예산 지원을 늘리는 개정안'
+    assert expansion.matched == ('개발원조',)
+    assert expand_query('개발원조금').matched == ()
+
+
+@pytest.mark.parametrize(
+    ('query', 'expected'),
+    [
+        ('개발원조를 확대하려는 법안', '국제개발협력기본법을 확대하려는 법안'),
+        ('개발원조는 어떻게 관리하나요?', '국제개발협력기본법은 어떻게 관리하나요?'),
+        ('ODA 개발원조를 확대', '국제개발협력기본법을 확대'),
+        ('개발원조와 ODA 예산', '국제개발협력기본법과 국제개발협력기본법 예산'),
+    ],
+)
+def test_development_aid_agrees_with_particles_and_collapses_adjacent_synonyms(query, expected):
+    assert expand_query(query).text == expected

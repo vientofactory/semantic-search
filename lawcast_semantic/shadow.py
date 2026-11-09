@@ -33,29 +33,23 @@ def validate_checkpoint(meta: dict) -> None:
 class Timing:
     encode_ms: float
     index_ms: float
-    rerank_ms: float
     serialize_ms: float
     total_ms: float
 
 
-def measure(
-    encode: Callable, rank: Callable, rerank: Callable, serialize: Callable
-) -> tuple[Timing, object]:
+def measure(encode: Callable, rank: Callable, serialize: Callable) -> tuple[Timing, object]:
     start = perf_counter()
     vector = encode()
     encoded = perf_counter()
     hits = rank(vector)
     ranked = perf_counter()
-    scored = rerank(hits)
-    reranked = perf_counter()
-    payload = serialize(hits, scored)
+    payload = serialize(hits)
     finished = perf_counter()
     return (
         Timing(
             (encoded - start) * 1000,
             (ranked - encoded) * 1000,
-            (reranked - ranked) * 1000,
-            (finished - reranked) * 1000,
+            (finished - ranked) * 1000,
             (finished - start) * 1000,
         ),
         payload,

@@ -15,14 +15,35 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from contextvars import ContextVar
+from threading import BoundedSemaphore
+from time import perf_counter
 
 import numpy as np
+import torch
 from sentence_transformers import SentenceTransformer
 
 from . import config
 from .device import resolve_device
+from .timing import DensePhase, EmbeddingStages
 
 logger = logging.getLogger(__name__)
+
+
+_preprocess_spans: ContextVar[list[DensePhase] | None] = ContextVar(
+    'query_preprocess_spans', default=None
+)
+
+
+class _ProfiledSentenceTransformer(SentenceTransformer):
+    def preprocess(self, *args, **kwargs):
+        spans = _preprocess_spans.get()
+        if spans is None:
+            return super().preprocess(*args, **kwargs)
+        started = perf_counter()
+        features = super().preprocess(*args, **kwargs)
+        spans.append(DensePhase(started, perf_counter()))
+        return features
 
 
 class KoreanEmbedder:
@@ -36,6 +57,12 @@ class KoreanEmbedder:
         self.model_name = model_name
         self.requested_device = device
         self.device, self.model = self._load_model(model_name, device)
+        # Share slots across index generations that reuse this embedder.
+        self.query_slots = (
+            BoundedSemaphore(config.MPS_QUERY_CONCURRENCY)
+            if self.device == 'mps' and config.MPS_QUERY_CONCURRENCY
+            else None
+        )
         self.tokenizer = self.model.tokenizer
         self.max_seq_length = int(self.model.max_seq_length)
         self.dimension = int(self.model.get_embedding_dimension())
@@ -54,7 +81,7 @@ class KoreanEmbedder:
         """
         resolved = resolve_device(device)
         try:
-            model = SentenceTransformer(model_name, device=resolved)
+            model = _ProfiledSentenceTransformer(model_name, device=resolved)
             if resolved != 'cpu':
                 KoreanEmbedder._probe(model, resolved)
         except Exception as exc:  # noqa: BLE001 - any accelerator failure degrades to cpu
@@ -67,7 +94,7 @@ class KoreanEmbedder:
                 exc,
             )
             resolved = 'cpu'
-            model = SentenceTransformer(model_name, device='cpu')
+            model = _ProfiledSentenceTransformer(model_name, device='cpu')
         return resolved, model
 
     @staticmethod
@@ -136,3 +163,32 @@ class KoreanEmbedder:
     def embed_query(self, text: str) -> np.ndarray:
         """Embed a single query into a 1-D float32 vector."""
         return self.embed_texts([text])[0]
+
+    def embed_query_profiled(self, text: str) -> tuple[np.ndarray, EmbeddingStages | None]:
+        """Run canonical encoding, separating device work from host conversion."""
+        spans: list[DensePhase] = []
+        token = _preprocess_spans.set(spans)
+        try:
+            (vector,) = self.model.encode(
+                [text], normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=False
+            )
+        finally:
+            _preprocess_spans.reset(token)
+        # Wait for a stream marker, not the whole device. Otherwise an async
+        # forward would be charged to the blocking host copy. This is wall time.
+        if vector.device.type == 'mps':
+            complete = torch.mps.Event()
+            complete.record()
+            complete.synchronize()
+        elif vector.device.type in {'cuda', 'xpu'}:
+            getattr(torch, vector.device.type).current_stream(vector.device).synchronize()
+        conversion_started = perf_counter()
+        output = vector.to(device='cpu', dtype=torch.float32).numpy()
+        finished = perf_counter()
+        if len(spans) != 1:
+            return output, None
+        return output, EmbeddingStages(
+            tokenization=spans[0],
+            model=DensePhase(spans[0].finished, conversion_started),
+            cpu_conversion=DensePhase(conversion_started, finished),
+        )
