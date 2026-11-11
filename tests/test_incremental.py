@@ -424,3 +424,41 @@ def test_script_reports_model_mismatch_cleanly(tmp_path: Path):
     assert result.returncode != 0
     assert 'Traceback' not in result.stderr
     assert 'error: ' in result.stderr and 'full rebuild' in result.stderr
+
+
+def test_update_releases_input_matrices_before_building_replacement(tmp_path, monkeypatch):
+    """Both the old-row tuple and new-vector buffer must leave the peak window."""
+    import weakref
+
+    from lawcast_semantic import incremental
+
+    paths = build_full_artifacts([make_notice(1001)], tmp_path)
+    plan = plan_update(
+        [make_notice(1001), make_notice(1002)],
+        **{key: paths[key] for key in ('chunks_path', 'embeddings_path')},
+        model_name=MODEL,
+    )
+    refs = []
+    load = incremental._load_stored_rows
+    encode = StubEmbedder().embed_texts
+    write = incremental._write_artifacts
+
+    def track_load(path):
+        ids, matrix = load(path)
+        refs.append(weakref.ref(matrix))
+        return ids, matrix
+
+    def track_encode(texts):
+        vectors = encode(texts)
+        refs.append(weakref.ref(vectors))
+        return vectors
+
+    def check_write(*args, **kwargs):
+        assert len(refs) == 2
+        assert all(ref() is None for ref in refs)
+        return write(*args, **kwargs)
+
+    monkeypatch.setattr(incremental, '_load_stored_rows', track_load)
+    monkeypatch.setattr(incremental, '_write_artifacts', check_write)
+    report = apply_update(plan, track_encode, MODEL, **paths)
+    assert report.wrote_artifacts

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from threading import BoundedSemaphore, Lock
-from time import perf_counter
+from time import monotonic, perf_counter
 
 import numpy as np
 import torch
@@ -88,6 +88,7 @@ class KoreanEmbedder:
         self._query_cache_size = config.QUERY_EMBED_CACHE_SIZE
         self._query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._query_cache_lock = Lock()
+        self.last_query_inference_at = monotonic()
 
     def _load_query_onnx(self, path: str) -> OnnxQueryEncoder | None:
         if not path:
@@ -244,6 +245,17 @@ class KoreanEmbedder:
             return self.embed_query_profiled(text)[0]
         return self.embed_texts([text])[0]
 
+    def warm_query(self) -> np.ndarray | None:
+        """Touch the active ONNX working set without caching or loading PyTorch."""
+        encoder = self._query_onnx
+        if encoder is None:
+            return None
+        # A warmup failure must not retire a serving session or load a second
+        # model. The ordinary request path still owns fallback decisions.
+        vector, _ = encoder.encode('민원 처리 절차와 주거 의료 교육 지원')
+        self.last_query_inference_at = monotonic()
+        return vector
+
     def embed_query_profiled(self, text: str) -> tuple[np.ndarray, EmbeddingStages | None]:
         """Reuse exact model vectors for repeated normalized queries and wider windows."""
         if not self._query_cache_size:
@@ -271,7 +283,9 @@ class KoreanEmbedder:
         encoder = self._query_onnx
         if encoder is not None:
             try:
-                return encoder.encode(text)
+                result = encoder.encode(text)
+                self.last_query_inference_at = monotonic()
+                return result
             except Exception as exc:  # noqa: BLE001 - a broken native session can fall back
                 with self._torch_lock:
                     if self._query_onnx is encoder:

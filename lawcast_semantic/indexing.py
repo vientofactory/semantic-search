@@ -42,7 +42,9 @@ class VectorIndex:
 
     def build(self, embeddings: np.ndarray) -> None:
         """(Re)build the index from an embeddings matrix."""
-        vectors = self._as_normalized_matrix(embeddings)
+        vectors = np.asarray(embeddings, dtype='float32')
+        if vectors.ndim != 2:
+            raise ValueError(f'expected 2-D embeddings, got shape {vectors.shape}')
         if vectors.shape[1] != self.dimension:
             raise ValueError(
                 f'embedding dim {vectors.shape[1]} does not match index dim {self.dimension}'
@@ -51,8 +53,14 @@ class VectorIndex:
         if len(vectors) == 0:
             return
         if self.index_type == 'sq8':
+            vectors = self._as_normalized_matrix(vectors)
             self.index.train(vectors)
-        self.index.add(vectors)
+            self.index.add(vectors)
+            return
+        # FlatIP owns a copy. Bound normalization scratch instead of keeping
+        # another complete corpus matrix alive during scheduled refreshes.
+        for start in range(0, len(vectors), 4096):
+            self.index.add(self._as_normalized_matrix(vectors[start : start + 4096]))
 
     def save(
         self,

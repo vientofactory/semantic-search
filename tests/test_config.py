@@ -30,6 +30,7 @@ STRIPPED_ENV = {
     'LAWCAST_SEMANTIC_MAX_K',
     'LAWCAST_SEMANTIC_DEFAULT_K',
     'LAWCAST_SEMANTIC_RELEVANCE_ENABLED',
+    'LAWCAST_SEMANTIC_QUERY_WARMUP_SECONDS',
 }
 
 
@@ -67,6 +68,26 @@ def test_artifacts_default_to_project_root():
         str(artifacts / 'faiss.index'),
         str(artifacts / 'id_map.json'),
     ]
+
+
+def test_idle_warmup_default_and_disable():
+    assert run_config('QUERY_WARMUP_SECONDS') == ['10']
+    assert run_config(
+        'QUERY_WARMUP_SECONDS', env_overrides={'LAWCAST_SEMANTIC_QUERY_WARMUP_SECONDS': '0'}
+    ) == ['0']
+
+
+def test_idle_warmup_rejects_invalid_intervals():
+    for value in ('-1', '1', '3601'):
+        try:
+            run_config(
+                'QUERY_WARMUP_SECONDS',
+                env_overrides={'LAWCAST_SEMANTIC_QUERY_WARMUP_SECONDS': value},
+            )
+        except AssertionError as exc:
+            assert 'query warmup seconds must be' in str(exc)
+        else:
+            raise AssertionError(f'accepted invalid interval {value}')
 
 
 def test_artifacts_dir_env_override(tmp_path: Path):

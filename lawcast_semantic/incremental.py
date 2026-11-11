@@ -266,19 +266,17 @@ def _merge_matrix(
     vector_by_id = {
         record['chunk_id']: new_vectors[row] for row, record in enumerate(plan.embed_records)
     }
-    rows: list[np.ndarray] = []
-    for record in plan.new_records:
+    merged = np.empty((len(plan.new_records), dimension), dtype='float32')
+    for position, record in enumerate(plan.new_records):
         chunk_id = record['chunk_id']
         if chunk_id in vector_by_id:
-            rows.append(vector_by_id[chunk_id])
+            merged[position] = vector_by_id[chunk_id]
             continue
         row = row_by_id.get(chunk_id)
         if row is None or old_matrix is None:
             raise ValueError(f'no stored vector for reused chunk {chunk_id}; run a full rebuild')
-        rows.append(old_matrix[row])
-    if not rows:
-        return np.zeros((0, dimension), dtype='float32')
-    return np.ascontiguousarray(np.vstack(rows), dtype='float32')
+        merged[position] = old_matrix[row]
+    return merged
 
 
 def _id_map_in_sync(id_map_path: Path, fingerprint: str) -> bool:
@@ -388,6 +386,9 @@ def apply_update(
         stored_rows = _load_stored_rows(embeddings_path)
         stored_ids, old_matrix = stored_rows if stored_rows else ([], None)
         merged = _merge_matrix(plan, new_vectors, old_matrix, stored_ids)
+        # Neither input is needed by the writer. Drop both the matrix name
+        # and its owning tuple before FAISS allocates the replacement index.
+        del stored_rows, old_matrix, new_vectors
         _write_artifacts(
             plan.new_records,
             merged,
