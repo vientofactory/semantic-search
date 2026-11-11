@@ -18,6 +18,7 @@ ENV_FILE_ENV = 'LAWCAST_SEMANTIC_ENV_FILE'
 # (a developer's shell exports and any project-root .env must not leak in).
 STRIPPED_ENV = {
     OVERRIDE_ENV,
+    'LAWCAST_SEMANTIC_ENVIRONMENT',
     'LAWCAST_SEMANTIC_DB_PATH',
     'LAWCAST_SEMANTIC_UPDATE_CRON',
     'LAWCAST_SEMANTIC_ALLOW_LARGE_DELETE',
@@ -334,3 +335,10 @@ def test_relevance_policy_is_opt_in():
     assert run_config(
         'RELEVANCE_ENABLED', env_overrides={'LAWCAST_SEMANTIC_RELEVANCE_ENABLED': 'true'}
     ) == ['True']
+
+
+def test_environment_defaults_to_production_and_accepts_explicit_development():
+    assert run_config('ENVIRONMENT') == ['production']
+    assert run_config(
+        'ENVIRONMENT', env_overrides={'LAWCAST_SEMANTIC_ENVIRONMENT': 'development'}
+    ) == ['development']
