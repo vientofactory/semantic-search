@@ -173,3 +173,22 @@ def test_shutdown_joins_one_native_warmup_without_starting_another(monkeypatch):
 
     asyncio.run(check())
     assert calls == [1]
+
+
+@pytest.mark.parametrize('environment', ['production', '', 'test', 'dev', 'development'])
+def test_routine_warmup_logs_require_explicit_development(monkeypatch, caplog, environment):
+    monkeypatch.setattr('service.idle_warmup.config.ENVIRONMENT', environment)
+    state, searcher = ready_state()
+    assert warm_once(state, 30)
+    searcher.embedder.warm_query.assert_called_once_with()
+    searcher.index.search.assert_called_once()
+    assert ('idle warmup completed' in caplog.text) == (environment == 'development')
+
+
+def test_production_keeps_warmup_failure_warnings(monkeypatch, caplog):
+    monkeypatch.setattr('service.idle_warmup.config.ENVIRONMENT', 'production')
+    state, searcher = ready_state()
+    searcher.embedder.warm_query.side_effect = RuntimeError('probe failure')
+    assert not warm_once(state, 30)
+    assert 'idle warmup failed: RuntimeError: probe failure' in caplog.text
+    assert state.status == 'ready'

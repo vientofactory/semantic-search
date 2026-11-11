@@ -135,6 +135,7 @@ PYTHONPATH=. .venv/bin/python scripts/prepare_query_onnx.py \
 
 CPU ONNX를 사용하면 기본적으로 실제 질의 추론이 10초 이상 없을 때 백그라운드에서 추론과 FAISS 조회를 한 번 수행합니다. 질의 벡터 캐시를 거치지 않으므로 같은 검색어의 캐시 적중만 반복하는 방식과 다릅니다. 캐시된 검색이 계속 들어와도 모델이 유휴 상태이면 예열 대상이 됩니다. PyTorch 가중치를 새로 읽거나 검색 결과·인덱스 세대를 변경하지 않습니다.
 
+- `LAWCAST_SEMANTIC_ENVIRONMENT=production`: 정상 warmup 완료 로그는 기본적으로 출력하지 않습니다. 개발 환경에서만 `development`를 명시하면 출력합니다. 실패 경고는 환경과 무관하게 유지하며 예열 동작에는 영향을 주지 않습니다. Compose에서는 `semantic-search/.env`로 주입합니다.
 - `LAWCAST_SEMANTIC_QUERY_WARMUP_SECONDS=10`: 유휴 예열 주기입니다. `0`이면 끄며, 켤 때는 5~3600초를 지정합니다. ONNX가 없거나 CPU 이외의 디바이스를 사용하면 추론 예열을 건너뜁니다.
 - 진행 중인 검색·인덱스 갱신이 있으면 해당 회차를 건너뜁니다. Linux에서는 메모리 PSI `some avg10`이 1% 이상이거나 cgroup v2 메모리 한도의 90% 이상을 사용하면 예열을 건너뜁니다. 실행 직후 새 요청이 들어올 수 있으므로 요청과의 완전한 배타 실행을 보장하는 기능은 아닙니다.
 - `idle warmup completed total_ms=...`로 실제 실행을 확인합니다. 종료 시에는 실행 중인 예열 작업이 끝날 때까지 기다립니다.

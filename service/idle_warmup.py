@@ -8,6 +8,8 @@ from time import perf_counter
 
 from anyio import to_thread
 
+from lawcast_semantic import config
+
 from .logging import get_service_logger
 
 logger = get_service_logger(__name__)
@@ -45,7 +47,8 @@ def warm_once(state, interval: float) -> bool:
     except Exception as exc:  # noqa: BLE001 - optional upkeep must not change serving readiness
         logger.warning('idle warmup failed: %s: %s', type(exc).__name__, exc)
         return False
-    logger.info('idle warmup completed total_ms=%.1f', (perf_counter() - started) * 1000)
+    if config.ENVIRONMENT == 'development':
+        logger.info('idle warmup completed total_ms=%.1f', (perf_counter() - started) * 1000)
     return True
 
 

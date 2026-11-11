@@ -118,6 +118,8 @@ if not 0 <= QUERY_EMBED_CACHE_SIZE <= 4096:
     raise ValueError('query embedding cache size must be between 0 and 4096')
 
 # Only the already-loaded CPU ONNX encoder participates; zero disables warming.
+# Routine warmup logs require an explicit development environment.
+ENVIRONMENT = os.environ.get('LAWCAST_SEMANTIC_ENVIRONMENT', 'production').strip().lower()
 QUERY_WARMUP_SECONDS = int(os.environ.get('LAWCAST_SEMANTIC_QUERY_WARMUP_SECONDS', '10'))
 if QUERY_WARMUP_SECONDS != 0 and not 5 <= QUERY_WARMUP_SECONDS <= 3600:
     raise ValueError('query warmup seconds must be zero or between 5 and 3600')
