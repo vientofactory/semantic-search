@@ -88,6 +88,56 @@ def test_disabled_cache_and_new_model_both_encode_again(make_embedder):
     assert calls == ['a'] * 4
 
 
+def test_warmup_bypasses_lru_and_never_loads_fallback(make_embedder):
+    calls = []
+
+    def encode(text):
+        calls.append(text)
+        return np.array([0.6, 0.8], dtype=np.float32), STAGES
+
+    embedder = make_embedder(2, encode)
+    embedder.embed_query_profiled('cached')
+    embedder._query_onnx = SimpleNamespace(encode=encode)
+    first = embedder.warm_query()
+    second = embedder.warm_query()
+    np.testing.assert_array_equal(first, second)
+    assert len(calls) == 3
+    assert list(embedder._query_cache) == ['cached']
+    embedder._query_onnx = None
+    assert embedder.warm_query() is None
+    assert len(calls) == 3
+
+
+def test_warmup_failure_does_not_retire_onnx(make_embedder):
+    embedder = make_embedder(0, lambda _: (np.ones(2), STAGES))
+
+    def fail(_):
+        raise RuntimeError('native failure')
+
+    encoder = SimpleNamespace(encode=fail)
+    embedder._query_onnx = encoder
+    with pytest.raises(RuntimeError, match='native failure'):
+        embedder.warm_query()
+    assert embedder._query_onnx is encoder
+    assert not embedder._torch_users
+
+
+def test_only_native_inference_and_upkeep_refresh_the_activity_clock(make_embedder, monkeypatch):
+    from lawcast_semantic import embedding
+
+    embedder = make_embedder(2, lambda _: (np.ones(2), STAGES))
+    embedder._query_onnx = SimpleNamespace(encode=lambda _: (np.ones(2), STAGES))
+    monkeypatch.setattr(embedding, 'monotonic', lambda: 123.0)
+    embedding.KoreanEmbedder._encode_query_profiled(embedder, 'fresh')
+    assert embedder.last_query_inference_at == 123.0
+    embedder._query_cache['cached'] = np.ones(2)
+    monkeypatch.setattr(embedding, 'monotonic', lambda: 456.0)
+    embedder.embed_query_profiled('cached')
+    assert embedder.last_query_inference_at == 123.0
+    embedder.warm_query()
+    assert embedder.last_query_inference_at == 456.0
+
+
 def test_unrelated_cache_misses_do_not_serialize_model_work(make_embedder):
     concurrent = Barrier(2, timeout=5)
 

@@ -14,13 +14,16 @@ is reported through `/health` and `/search` until the process is restarted.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import resource
 import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal
 
 from anyio import CapacityLimiter, from_thread, to_thread
@@ -99,6 +102,41 @@ class EngineState:
         # can show a tick while it runs (record_update clears `updating`).
         self.last_update_triggered_at: str | None = None
         self.updating = False
+        self.active_searches = 0
+        self.last_search_finished = monotonic()
+
+    def search_started(self) -> None:
+        with self._lock:
+            self.active_searches += 1
+
+    def search_finished(self) -> None:
+        with self._lock:
+            self.active_searches -= 1
+            self.last_search_finished = monotonic()
+
+    def idle_searcher(self, interval: float):
+        """Select an idle generation without retaining the state lock during inference."""
+        with self._lock:
+            if (
+                self.status != 'ready'
+                or self.device != 'cpu'
+                or self.updating
+                or self.active_searches
+                # Cached traffic does not touch ONNX. It must not keep an
+                # otherwise cold model from receiving background upkeep.
+                or monotonic()
+                - getattr(
+                    getattr(self.searcher, 'embedder', None),
+                    'last_query_inference_at',
+                    self.last_search_finished,
+                )
+                < interval
+                or not callable(
+                    getattr(getattr(self.searcher, 'embedder', None), 'warm_query', None)
+                )
+            ):
+                return None
+            return self.searcher
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -316,7 +354,7 @@ def log_startup_config() -> None:
     service_logger.info(
         'semantic config model=%s device_request=%s batch=%s artifacts=%s '
         'queryLen=%s maxK=%s defaultK=%s minSim=%s clearSim=%s '
-        'update=%s/%s',
+        'update=%s/%s idleWarmupSeconds=%s',
         config.MODEL_NAME,
         config.DEVICE,
         config.EMBED_BATCH_SIZE,
@@ -328,6 +366,7 @@ def log_startup_config() -> None:
         config.CLEAR_SIMILARITY,
         'db' if config.DB_PATH else 'no-db',
         config.UPDATE_CRON if config.UPDATE_CRON else 'no-schedule',
+        config.QUERY_WARMUP_SECONDS,
     )
 
 
@@ -449,13 +488,24 @@ async def lifespan(app: FastAPI):
             name='semantic-update-scheduler',
         ).start()
     grpc_server = None
+    warmup_stop = asyncio.Event()
+    warmup_task = None
     if bind := os.environ.get('LAWCAST_SEMANTIC_GRPC_BIND', '').strip():
         from .grpc_server import start_server
 
         grpc_server = await start_server(app, bind)
+    if config.QUERY_WARMUP_SECONDS:
+        from .idle_warmup import run_warmup
+
+        warmup_task = asyncio.create_task(
+            run_warmup(STATE, config.QUERY_WARMUP_SECONDS, warmup_stop)
+        )
     try:
         yield
     finally:
+        warmup_stop.set()
+        if warmup_task is not None:
+            await warmup_task
         if grpc_server is not None:
             await grpc_server.stop(grace=5)
 
@@ -531,6 +581,23 @@ async def search_http(
 
 
 async def search_with_admission(app: FastAPI, query: str, k: int) -> SearchResponse:
+    STATE.search_started()
+    before = resource.getrusage(resource.RUSAGE_SELF)
+    try:
+        return await _search_with_admission(app, query, k)
+    finally:
+        after = resource.getrusage(resource.RUSAGE_SELF)
+        STATE.search_finished()
+        service_logger.info(
+            'search-resources process_major_faults_delta=%d process_minor_faults_delta=%d '
+            'transport=%s trace_id=%s attempt=%s',
+            after.ru_majflt - before.ru_majflt,
+            after.ru_minflt - before.ru_minflt,
+            *trace_fields(),
+        )
+
+
+async def _search_with_admission(app: FastAPI, query: str, k: int) -> SearchResponse:
     lanes = getattr(app.state, 'query_lanes', None)
     if lanes is not None:
         return await _search_with_worker_lanes(query, k, lanes)
@@ -696,7 +763,8 @@ def _format_search_response(
     )
     service_logger.info(
         'search-timing k=%d dense_ms=%.1f annotate_ms=%.1f total_ms=%.1f '
-        'admission_ms=%.1f rank_wait_ms=%.1f transport=%s trace_id=%s attempt=%s',
+        'admission_ms=%.1f rank_wait_ms=%.1f transport=%s trace_id=%s attempt=%s '
+        'embedding_ms=%.1f model_ms=%.1f faiss_ms=%.1f',
         k,
         timings.denseMs,
         timings.annotateMs,
@@ -704,6 +772,9 @@ def _format_search_response(
         admission_ms,
         rank_wait_ms,
         *trace_fields(),
+        (stages.embedding.finished - stages.embedding.started) * 1000 if stages else -1,
+        (embedding.model.finished - embedding.model.started) * 1000 if embedding else -1,
+        (stages.faiss.finished - stages.faiss.started) * 1000 if stages else -1,
     )
     return SearchResponse(
         query=query,

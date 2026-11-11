@@ -114,6 +114,26 @@ def test_build_rejects_wrong_dimension():
         index.build(np.ones((3, 2), dtype='float32'))
 
 
+def test_flat_build_bounds_scratch_and_preserves_exact_rows(monkeypatch):
+    vectors = np.random.default_rng(7).normal(size=(9001, 16)).astype('float32')
+    vectors[2] = 0
+    before = vectors.copy()
+    expected = VectorIndex._as_normalized_matrix(vectors)
+    normalizer = VectorIndex._as_normalized_matrix
+    batches = []
+
+    def bounded(matrix):
+        batches.append(len(matrix))
+        return normalizer(matrix)
+
+    monkeypatch.setattr(VectorIndex, '_as_normalized_matrix', staticmethod(bounded))
+    index = VectorIndex(16)
+    index.build(vectors)
+    assert batches == [4096, 4096, 809]
+    np.testing.assert_array_equal(index.index.reconstruct_n(), expected)
+    np.testing.assert_array_equal(vectors, before)
+
+
 def test_searcher_ranks_and_maps_metadata(tmp_path: Path):
     """Top hit maps its metadata; the window rank is score-desc and stable.
 
