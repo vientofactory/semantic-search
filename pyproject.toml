@@ -13,7 +13,7 @@
 
 [project]
 name = "lawcast-semantic-search"
-version = "3.0.0"
+version = "3.1.0"
 description = "LawCast semantic search pipeline and FastAPI sidecar (BGE-m3-ko + FAISS)"
 readme = "README.md"
 requires-python = ">=3.13"

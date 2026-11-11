@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package lawcast.semantic.v1;
+
+// Internal data plane. HTTP remains available for operators and rollback.
+service SemanticSearch {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc GetHealth(HealthRequest) returns (HealthResponse);
+}
+
+message SearchRequest {
+  string query = 1;
+  // The window counts chunks, not distinct notices.
+  optional uint32 k = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  uint32 indexedChunks = 2;
+  optional string lastUpdateAt = 3;
+  optional string lastUpdateTriggeredAt = 4;
+  uint32 maxK = 5;
+}
+
+message SearchHit {
+  string chunkId = 1;
+  uint64 noticeNum = 2;
+  string subject = 3;
+  string committee = 4;
+  string section = 5;
+  double score = 6;
+  string text = 7;
+  optional bool lexicalEvidence = 8;
+}
+
+message PhaseTiming {
+  double startMs = 1;
+  double durationMs = 2;
+}
+
+message EmbeddingStages {
+  PhaseTiming tokenization = 1;
+  PhaseTiming model = 2;
+  PhaseTiming cpuConversion = 3;
+}
+
+message DenseStages {
+  PhaseTiming embedding = 1;
+  PhaseTiming faiss = 2;
+  PhaseTiming classification = 3;
+  EmbeddingStages embeddingStages = 4;
+}
+
+message SearchTimings {
+  double denseMs = 1;
+  double annotateMs = 2;
+  double totalMs = 3;
+  DenseStages denseStages = 4;
+  optional double admissionMs = 5;
+  optional double rankWaitMs = 6;
+}
+
+message SearchResponse {
+  string query = 1;
+  uint32 k = 2;
+  optional string model = 3;
+  optional string lastUpdateAt = 4;
+  // Absent for legacy cosine windows; zero is a valid calibrated count.
+  optional uint32 candidateCount = 5;
+  repeated SearchHit results = 6;
+  repeated SearchHit weakResults = 7;
+  SearchTimings timings = 8;
+}

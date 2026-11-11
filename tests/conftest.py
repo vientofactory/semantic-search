@@ -164,6 +164,8 @@ def real_sidecar_process():
         # load (measured: engine_load 10s online vs 143s with an unreachable
         # hub) — a pre-measurement phase that must not depend on the network.
         'HF_HUB_OFFLINE': '1',
+        # This fixture exercises native embedding under concurrent load.
+        'LAWCAST_SEMANTIC_QUERY_EMBED_CACHE_SIZE': '0',
     }
     process = subprocess.Popen(
         [

@@ -44,7 +44,7 @@ COPY --chown=semantic:semantic scripts/ scripts/
 
 USER semantic
 
-EXPOSE 8300
+EXPOSE 8300 8301
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8300", "--no-access-log"]
