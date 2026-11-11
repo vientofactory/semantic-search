@@ -86,14 +86,22 @@ def test_search_returns_ranked_hits(client):
     assert 'text' in hit
 
 
-def test_search_reports_pipeline_timings_in_milliseconds(client, monkeypatch):
+def test_search_reports_pipeline_timings_in_milliseconds(client, monkeypatch, caplog):
     import service.app as app_module
 
-    ticks = iter([10, 10.125, 10.15625])
+    ticks = iter([10, 10.0625, 10.125, 10.15625])
     monkeypatch.setattr(app_module, 'time', SimpleNamespace(perf_counter=lambda: next(ticks)))
-    response = client.get('/search', params={'query': '세입자 보호', 'k': 3})
+    trace_id = 'abecd012-1234-4321-8765-abcdef987654'
+    response = client.get(
+        '/search',
+        params={'query': '세입자 보호', 'k': 3},
+        headers={'x-lawcast-search-trace': trace_id, 'x-lawcast-search-attempt': '2'},
+    )
     assert response.status_code == 200
+    assert f'transport=http trace_id={trace_id} attempt=2' in caplog.text
     assert response.json()['timings'] == {
+        'admissionMs': 62.5,
+        'rankWaitMs': 0.0,
         'denseMs': 125.0,
         'annotateMs': 31.25,
         'totalMs': 156.25,
@@ -124,11 +132,13 @@ def test_search_serializes_dense_stage_offsets_and_durations(client, monkeypatch
         return result
 
     monkeypatch.setattr(searcher, 'search_tiered', search_with_stages)
-    ticks = iter([10, 10.75, 10.875])
+    ticks = iter([10, 10.0625, 10.75, 10.875])
     monkeypatch.setattr(app_module, 'time', SimpleNamespace(perf_counter=lambda: next(ticks)))
     response = client.get('/search', params={'query': '세입자 보호', 'k': 3})
     assert response.status_code == 200
     assert response.json()['timings'] == {
+        'admissionMs': 62.5,
+        'rankWaitMs': 0.0,
         'denseMs': 750.0,
         'annotateMs': 125.0,
         'totalMs': 875.0,

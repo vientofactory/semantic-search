@@ -1,6 +1,6 @@
 # LawCast Semantic Search
 
-LawCast의 입법예고를 문장의 의미로 찾는 검색 엔진입니다. “세입자 보호”로 “임차인”이 들어간 법률안을 찾는 것처럼, 키워드가 정확히 일치하지 않는 검색을 보완합니다. LawCast 백엔드는 이 엔진을 FastAPI 사이드카로 호출합니다.
+LawCast의 입법예고를 문장의 의미로 찾는 검색 엔진입니다. “세입자 보호”로 “임차인”이 들어간 법률안을 찾는 것처럼, 키워드가 정확히 일치하지 않는 검색을 보완합니다. LawCast 백엔드는 Compose에서 이 엔진의 내부 gRPC 포트로 검색과 상태를 조회합니다.
 
 검색 대상은 SQLite DB의 `notice_archives.proposalReason`(제안이유 및 주요내용)과 `notice_archive_snapshot_states.ai_summary`입니다. 원문을 섹션과 문장 단위로 나누고 AI 요약은 별도 섹션으로 덧붙입니다. 각 청크를 임베딩할 때 제목을 함께 넣으며 제안이유가 없는 공고는 제목 청크를 유지합니다.
 
@@ -18,7 +18,7 @@ flowchart TB
         build --> index["faiss.index + id_map.json"]
     end
 
-    subgraph retrieval["질의 검색 · HTTP 사이드카"]
+    subgraph retrieval["질의 검색 · gRPC / HTTP 사이드카"]
         direction LR
         query(["질의"]) --> aliases["약어 확장·정규화"]
         aliases --> queryEmbed["동일 모델로 질의 임베딩"]
@@ -86,7 +86,7 @@ curl --get http://127.0.0.1:8300/search \
 
 - `GET /health`: `status`가 `loading`, `ready`, `failed` 중 하나로 표시됩니다. `model`, `device`, `indexedChunks`, `maxK`로 현재 엔진 설정을 확인합니다.
 - `GET /search`: 기본 질의 길이는 1~500자, `k`는 1~100(기본 5)입니다. **`k`의 단위는 공고가 아니라 청크**이며, 공고별 중복 제거는 백엔드가 담당합니다. 공백만 있는 질의는 400, 길이·범위 위반은 422, 엔진 미준비 상태는 503을 반환합니다.
-- 성공 응답의 `timings`는 요청한 청크 구간 하나의 소요 시간을 밀리초로 반환합니다. `denseMs`는 검색 엔진의 후보 검색·분류, `annotateMs`는 두 결과 목록의 변환·주석 처리, `totalMs`는 두 단계 전체입니다. 요청 대기, HTTP 전송, 응답 JSON 직렬화는 포함하지 않습니다.
+- 성공 응답의 `timings`는 요청한 청크 구간 하나의 소요 시간을 밀리초로 반환합니다. `denseMs`는 검색 엔진의 후보 검색·분류, `annotateMs`는 두 결과 목록의 변환·주석 처리, `totalMs`는 두 단계 전체입니다. 작업자 배정 대기는 포함하지만, 네트워크 전송과 응답 직렬화는 포함하지 않습니다. 로그의 `admission_ms`는 임베딩 작업 시작까지의 대기, `rank_wait_ms`는 별도 순위 작업자 시작까지의 대기입니다.
 - `timings.denseStages`는 질의 임베딩(`embedding`), FAISS 조회·정렬 및 후보 구성(`faiss`), 관련도 분류(`classification`)의 `startMs`와 `durationMs`를 반환합니다. 시작 위치는 Dense 시작 기준입니다. 질의 전처리·벡터 검증 등은 Dense 총시간에 남으므로 세 단계의 합과 총시간이 다를 수 있습니다. 검색을 건너뛰면 단계별 값은 `null`입니다.
 - 검색 결과는 코사인 유사도에 따라 `results`(기본 0.45 이상)와 `weakResults`(0.25 이상 0.45 미만)로 나뉩니다. 0.25 미만은 제외하며, 관련 결과가 없으면 빈 배열을 반환합니다.
 - `POST /reload`: 디스크의 새 아티팩트를 검증한 뒤 메모리의 인덱스를 교체합니다. 성공은 200, 엔진 미준비·갱신 중은 409, 검증 실패는 503입니다. 검증에 실패해도 기존 세대는 계속 서빙합니다. 인증이 없는 내부용 엔드포인트이므로 외부에 공개하지 않습니다.
@@ -96,6 +96,40 @@ curl --get http://127.0.0.1:8300/search \
 시작 시 아티팩트 로딩에 실패하면, DB 경로가 설정되어 있고 추가 임베딩 없이 복구할 수 있는 경우에만 한 차례 복구를 시도합니다. 모델 로딩 실패나 복구 실패로 `failed` 상태가 되면 원인을 해결한 뒤 프로세스를 재시작해야 합니다.
 
 백엔드에서는 `SEMANTIC_SEARCH_ENABLED`, `SEMANTIC_SEARCH_API_URL`, `SEMANTIC_SEARCH_TIMEOUT`을 설정합니다. 기본값은 활성화, `http://127.0.0.1:8300`, `10000`입니다. 타임아웃은 밀리초 단위이며, `SEMANTIC_SEARCH_TIMEOUT`은 개별 요청, `SEMANTIC_SEARCH_TOTAL_TIMEOUT`은 청크 창을 넓혀 조회하는 전체 과정의 예산입니다. 전체 예산의 기본값은 개별 요청 타임아웃과 같습니다. Compose에서는 URL을 `http://semantic-search:8300`으로 지정합니다.
+
+## 내부 gRPC 연결
+
+Compose에서는 백엔드가 `semantic-search:8301`의 `Search`, `GetHealth`를 단일 gRPC 채널로 호출합니다. 이 포트는 호스트에 게시하지 않습니다. 운영용 HTTP 헬스체크, `POST /reload`, 기존 HTTP 검색 경로는 포트 `8300`에 남겨 둡니다. HTTP와 gRPC가 같은 모델, 인덱스 세대, 검색 작업 큐를 사용하므로 인덱스를 다시 구축할 필요는 없습니다.
+
+- `SEMANTIC_SEARCH_GRPC_TARGET`이 비어 있으면 백엔드는 기존 HTTP URL을 사용합니다. gRPC가 설정된 상태에서 RPC가 실패하면 HTTP로 재시도하지 않고 기존 키워드 검색 전환 정책을 따릅니다.
+- 순차 배포할 때는 사이드카의 gRPC 리스너를 먼저 배포하고 확인한 뒤 백엔드를 전환합니다. 배포 후 HTTP로 되돌릴 때는 루트 Compose 환경에서 `SEMANTIC_SEARCH_GRPC_TARGET=`로 지정한 뒤 백엔드 컨테이너만 재생성합니다.
+- 로컬에서는 `LAWCAST_SEMANTIC_GRPC_BIND=127.0.0.1:8301`을 지정해 리스너를 켤 수 있습니다. 백엔드를 빌드한 뒤 `node scripts/benchmark-semantic-transport.cjs http://127.0.0.1:8300 127.0.0.1:8301`을 백엔드 디렉터리에서 실행하면 두 전송 경로의 결과와 지연을 비교합니다.
+- [protobuf 계약](service/semantic_search.proto)을 바꿀 때는 백엔드의 계약 사본도 갱신합니다. Python 바인딩은 개발 환경에 `grpcio-tools==1.85.1`을 설치한 뒤 아래 명령으로 재생성합니다.
+
+```bash
+.venv/bin/python -m grpc_tools.protoc -I service --python_out=service service/semantic_search.proto
+```
+
+### 질의 임베딩 재사용
+
+정규화된 질의가 같으면 모델이 이미 계산한 벡터를 메모리에서 재사용합니다. `k`를 늘려 다시 검색할 때도 재사용하지만, FAISS는 항상 현재 인덱스에서 다시 조회합니다. 모델 인스턴스마다 최대 256개를 최근 사용 순서로 보관하고, 프로세스가 재시작되면 비워집니다. 최초 질의나 캐시에서 제거된 질의는 원래대로 임베딩합니다. `LAWCAST_SEMANTIC_QUERY_EMBED_CACHE_SIZE=0`은 gRPC를 유지하면서 재사용만 끕니다.
+
+### CPU 질의 추론: FP32 ONNX와 지연 로딩
+
+같은 리비전의 `dragonkue/BGE-m3-ko`에서 내보낸 FP32 transformer 그래프가 있을 때만 사용합니다. 예를 들어 ONNX 내보내기 도구가 설치된 별도 환경에서 Sentence Transformers의 `backend="onnx"`와 `model_kwargs={"export": True}`로 모델을 불러온 뒤 `save_pretrained`로 저장합니다. `model.onnx`와 외부 가중치 파일을 함께 유지합니다.
+
+같은 모델 리비전의 PyTorch 기준 벡터와 토크나이저를 한 번 준비합니다. 그래프와 외부 가중치, 토크나이저와 검증 파일을 함께 배치합니다.
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/prepare_query_onnx.py \
+  --graph artifacts/query-onnx/model.onnx \
+  --revision 7074d66aa46562342193ca4feb3d89bf9dad71b4
+```
+
+- `LAWCAST_SEMANTIC_QUERY_ONNX_PATH`를 그래프의 절대 경로로 지정합니다. Compose에서는 기존 아티팩트 마운트 아래의 경로(예: `/app/artifacts/query-onnx/model.onnx`)를 사용합니다.
+- `LAWCAST_SEMANTIC_QUERY_ONNX_THREADS`는 ONNX 세션 내부 스레드 수이며 기본값은 2입니다. 시작 로그의 `query-encoder=onnx ... torch_weights=deferred`로 활성화를 확인합니다. 시작 시에는 저장한 기준 벡터와 파일 해시를 검사하므로 PyTorch 가중치를 읽지 않습니다. 검증 파일이 없거나 검증에 실패하면 PyTorch로 시작합니다.
+- ONNX는 질의 캐시 미스의 transformer 계산만 바꿉니다. 토크나이저, 풀링, 정규화, 캐시, FAISS 및 문서 임베딩은 그대로입니다. 새 문서 벡터가 필요한 갱신에서만 같은 리비전의 PyTorch 가중치를 불러오고, 배치가 끝나면 모델 참조를 해제합니다. 변경 없는 갱신이나 인덱스 재로드는 가중치를 읽지 않습니다. 실행 중 ONNX가 실패하면 PyTorch로 전환해 해당 프로세스에서 계속 사용합니다.
+- 경로를 비우고 사이드카를 재시작하면 질의 추론만 PyTorch로 복귀합니다. gRPC나 캐시를 끄거나 인덱스를 다시 만들 필요가 없습니다.
 
 ## 설정
 

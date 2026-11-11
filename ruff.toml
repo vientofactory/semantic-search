@@ -5,7 +5,7 @@
 #   ruff check . && ruff format --check .   # verify clean
 line-length = 100
 target-version = "py313"
-exclude = [".venv"]
+exclude = [".venv", "*_pb2.py"]
 
 [lint]
 # E/W: pycodestyle, F: pyflakes, I: import sorting, UP: pyupgrade

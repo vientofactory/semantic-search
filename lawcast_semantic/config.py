@@ -106,6 +106,17 @@ QUERY_RANK_WORKERS = int(os.environ.get('LAWCAST_SEMANTIC_QUERY_RANK_WORKERS', '
 if QUERY_EMBED_WORKERS < 1 or QUERY_RANK_WORKERS < 0:
     raise ValueError('query embedding workers must be positive and ranking workers nonnegative')
 
+# Optional local FP32 transformer graph; corpus embedding stays on PyTorch.
+QUERY_ONNX_PATH = os.environ.get('LAWCAST_SEMANTIC_QUERY_ONNX_PATH', '').strip()
+QUERY_ONNX_THREADS = int(os.environ.get('LAWCAST_SEMANTIC_QUERY_ONNX_THREADS', '2'))
+if not 1 <= QUERY_ONNX_THREADS <= 64:
+    raise ValueError('query ONNX threads must be between 1 and 64')
+
+# Bound in-memory query vector reuse independently of index generations.
+QUERY_EMBED_CACHE_SIZE = int(os.environ.get('LAWCAST_SEMANTIC_QUERY_EMBED_CACHE_SIZE', '256'))
+if not 0 <= QUERY_EMBED_CACHE_SIZE <= 4096:
+    raise ValueError('query embedding cache size must be between 0 and 4096')
+
 # Scheduled refresh gates (agent_memories/08-semantic-search-production-deploy/
 # incremental-update-pipeline-design.md §4.2). All three default to disabled:
 # an empty DB_PATH turns off both the scheduler and the boot-repair hook, so

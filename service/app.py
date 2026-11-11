@@ -1,20 +1,20 @@
-"""Online adapter: HTTP sidecar exposing the semantic search library.
+"""Online adapter: HTTP and optional internal gRPC over one search engine.
 
 Run from the side project root (the engine loads artifacts via
 `lawcast_semantic.config` defaults):
 
     .venv/bin/python -m uvicorn service.app:app --host 127.0.0.1 --port 8300
 
-The LawCast backend calls this service over HTTP (same integration style as
-its Ollama client) and falls back to keyword search when this service answers
-503 or is unreachable. The engine loads once in a background thread at
-startup; while it loads, `/search` answers 503 immediately instead of making
-requests wait. A failed load is reported through `/health` and `/search` until
-the process is restarted.
+The LawCast backend uses gRPC in Compose and falls back to keyword search
+when the sidecar is unavailable. HTTP remains available for operations. The
+engine loads once in a background thread at startup; while it loads,
+`/search` answers 503 immediately instead of making requests wait. A failed load
+is reported through `/health` and `/search` until the process is restarted.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -33,6 +33,7 @@ from lawcast_semantic.hybrid import has_lexical_evidence
 from lawcast_semantic.omp_env import use_single_threaded_omp
 
 from .logging import get_service_logger
+from .search_trace import search_trace, trace_fields
 
 if TYPE_CHECKING:
     from lawcast_semantic.search import SearchResults
@@ -257,6 +258,8 @@ class SearchTimings(BaseModel):
         ge=0, description='Search pipeline in milliseconds, before serialization.'
     )
     denseStages: DenseStagesTiming | None = None
+    admissionMs: float | None = Field(default=None, ge=0)
+    rankWaitMs: float | None = Field(default=None, ge=0)
 
 
 class SearchResponse(BaseModel):
@@ -445,7 +448,16 @@ async def lifespan(app: FastAPI):
             daemon=True,
             name='semantic-update-scheduler',
         ).start()
-    yield
+    grpc_server = None
+    if bind := os.environ.get('LAWCAST_SEMANTIC_GRPC_BIND', '').strip():
+        from .grpc_server import start_server
+
+        grpc_server = await start_server(app, bind)
+    try:
+        yield
+    finally:
+        if grpc_server is not None:
+            await grpc_server.stop(grace=5)
 
 
 app = FastAPI(title='LawCast Semantic Search', lifespan=lifespan)
@@ -514,17 +526,32 @@ async def search_http(
     query: str = Query(..., min_length=1, max_length=MAX_QUERY_LENGTH),
     k: int = Query(DEFAULT_K, ge=1, le=MAX_K),
 ) -> SearchResponse:
-    lanes = getattr(request.app.state, 'query_lanes', None)
+    with search_trace('http', request.headers):
+        return await search_with_admission(request.app, query, k)
+
+
+async def search_with_admission(app: FastAPI, query: str, k: int) -> SearchResponse:
+    lanes = getattr(app.state, 'query_lanes', None)
     if lanes is not None:
         return await _search_with_worker_lanes(query, k, lanes)
-    limiter = getattr(request.app.state, 'mps_admission', None)
-    if limiter is None:
-        return await run_in_threadpool(search, query, k)
+    limiter = getattr(app.state, 'mps_admission', None)
     snapshot = _search_snapshot(query)
-    if snapshot['device'] != 'mps':
-        return await run_in_threadpool(_search_response, query, k, snapshot)
-
     started = time.perf_counter()
+
+    def dispatch(on_embedding_finished=None):
+        # Include both admission and AnyIO worker dispatch, measured at entry
+        # to the worker rather than when the event loop submits it.
+        return _search_response(
+            query,
+            k,
+            snapshot,
+            admission_started=started,
+            admission_ms=(time.perf_counter() - started) * 1000,
+            on_embedding_finished=on_embedding_finished,
+        )
+
+    if limiter is None or snapshot['device'] != 'mps':
+        return await run_in_threadpool(dispatch)
     borrower = object()
     # Wait before borrowing an AnyIO worker, so queued searches do not starve
     # health checks or FAISS work. Active native work is not abandoned on cancellation.
@@ -538,15 +565,7 @@ async def search_http(
             released = True
 
     try:
-        return await run_in_threadpool(
-            _search_response,
-            query,
-            k,
-            snapshot,
-            admission_started=started,
-            admission_ms=(time.perf_counter() - started) * 1000,
-            on_embedding_finished=lambda: from_thread.run_sync(release),
-        )
+        return await run_in_threadpool(dispatch, lambda: from_thread.run_sync(release))
     finally:
         release()
 
@@ -564,7 +583,7 @@ async def _search_with_worker_lanes(
 
     def embed_work():
         admission_ms = (time.perf_counter() - started) * 1000
-        return searcher.embed_tiered(query, k, admission_started=started), admission_ms
+        return searcher.embed_tiered(query, k), admission_ms
 
     # Each lane acquires a capacity token before starting a worker. Requests
     # waiting for FAISS never retain an embedding token or an AnyIO worker.
@@ -619,7 +638,6 @@ def _search_response(
         outcome = searcher.search_tiered(
             query,
             k=k,
-            admission_started=admission_started,
             on_embedding_finished=on_embedding_finished,
         )
     return _format_search_response(query, k, snapshot, outcome, started, admission_ms)
@@ -659,6 +677,8 @@ def _format_search_response(
         denseMs=(dense_finished - started) * 1000.0,
         annotateMs=(finished - dense_finished) * 1000.0,
         totalMs=(finished - started) * 1000.0,
+        admissionMs=admission_ms,
+        rankWaitMs=rank_wait_ms,
         denseStages=DenseStagesTiming(
             embedding=phase_timing(stages.embedding),
             faiss=phase_timing(stages.faiss),
@@ -676,13 +696,14 @@ def _format_search_response(
     )
     service_logger.info(
         'search-timing k=%d dense_ms=%.1f annotate_ms=%.1f total_ms=%.1f '
-        'admission_ms=%.1f rank_wait_ms=%.1f',
+        'admission_ms=%.1f rank_wait_ms=%.1f transport=%s trace_id=%s attempt=%s',
         k,
         timings.denseMs,
         timings.annotateMs,
         timings.totalMs,
         admission_ms,
         rank_wait_ms,
+        *trace_fields(),
     )
     return SearchResponse(
         query=query,
